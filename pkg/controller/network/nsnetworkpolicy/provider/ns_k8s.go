@@ -19,7 +19,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"kubesphere.io/kubesphere/pkg/controller/network/types"
 	"reflect"
 	"strings"
 	"sync"
@@ -36,6 +35,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog"
+
+	"kubesphere.io/kubesphere/pkg/apis/network/v1alpha1"
 )
 
 const (
@@ -145,7 +146,7 @@ func (c *k8sPolicyController) syncToDatastore(key string) error {
 		// The object no longer exists - delete from the datastore.
 		klog.Infof("Deleting NetworkPolicy %s from k8s datastore", key)
 		ns, name := getkey(key)
-		err := c.client.NetworkingV1().NetworkPolicies(ns).Delete(name, nil)
+		err := c.client.NetworkingV1().NetworkPolicies(ns).Delete(context.Background(), name, metav1.DeleteOptions{})
 		if errors.IsNotFound(err) {
 			return nil
 		}
@@ -164,7 +165,7 @@ func (c *k8sPolicyController) syncToDatastore(key string) error {
 			}
 
 			// Doesn't exist - create it.
-			_, err := c.client.NetworkingV1().NetworkPolicies(p.Namespace).Create(&p)
+			_, err := c.client.NetworkingV1().NetworkPolicies(p.Namespace).Create(context.Background(), &p, metav1.CreateOptions{})
 			if err != nil {
 				klog.Warningf("Failed to create NetworkPolicy %s", key)
 				return err
@@ -178,7 +179,7 @@ func (c *k8sPolicyController) syncToDatastore(key string) error {
 
 		// The policy already exists, update it and write it back to the datastore.
 		gp.Spec = p.Spec
-		_, err = c.client.NetworkingV1().NetworkPolicies(p.Namespace).Update(gp)
+		_, err = c.client.NetworkingV1().NetworkPolicies(p.Namespace).Update(context.Background(), gp, metav1.UpdateOptions{})
 		if err != nil {
 			klog.Warningf("Failed to update NetworkPolicy %s", key)
 			return err
@@ -246,7 +247,7 @@ func NewNsNetworkPolicyProvider(client kubernetes.Interface, npInformer informer
 		// Filter in only objects that are written by policy controller.
 		m := make(map[string]interface{})
 		for _, policy := range policies {
-			if strings.HasPrefix(policy.Name, types.NSNPPrefix) {
+			if strings.HasPrefix(policy.Name, v1alpha1.NSNPPrefix) {
 				policy.ObjectMeta = metav1.ObjectMeta{Name: policy.Name, Namespace: policy.Namespace}
 				k := c.GetKey(policy.Name, policy.Namespace)
 				m[k] = *policy

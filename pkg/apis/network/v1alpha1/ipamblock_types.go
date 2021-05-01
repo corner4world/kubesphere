@@ -18,11 +18,11 @@ package v1alpha1
 
 import (
 	"fmt"
-	"github.com/projectcalico/libcalico-go/lib/names"
 	"math/big"
 	"reflect"
 	"strings"
 
+	"github.com/projectcalico/libcalico-go/lib/names"
 	cnet "github.com/projectcalico/libcalico-go/lib/net"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -51,8 +51,7 @@ const (
 // +k8s:openapi-gen=true
 // +kubebuilder:resource:scope=Cluster
 type IPAMBlock struct {
-	metav1.TypeMeta `json:",inline"`
-	// Standard object's metadata.
+	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	// Specification of the IPAMBlock.
 	Spec IPAMBlockSpec `json:"spec,omitempty"`

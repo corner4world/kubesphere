@@ -62,6 +62,10 @@ func init() {
 		&FederatedLimitRangeList{},
 		&FederatedNamespace{},
 		&FederatedNamespaceList{},
+		&FederatedNotificationConfig{},
+		&FederatedNotificationConfigList{},
+		&FederatedNotificationReceiver{},
+		&FederatedNotificationReceiverList{},
 		&FederatedPersistentVolumeClaim{},
 		&FederatedPersistentVolumeClaimList{},
 		&FederatedResourceQuota{},
@@ -74,6 +78,13 @@ func init() {
 		&FederatedStatefulSetList{},
 		&FederatedUser{},
 		&FederatedUserList{},
+		&FederatedGroup{},
+		&FederatedGroupList{},
 		&FederatedWorkspace{},
-		&FederatedWorkspaceList{})
+		&FederatedWorkspaceList{},
+		&FederatedWorkspaceRole{},
+		&FederatedWorkspaceRoleList{},
+		&FederatedWorkspaceRoleBinding{},
+		&FederatedWorkspaceRoleBindingList{},
+	)
 }

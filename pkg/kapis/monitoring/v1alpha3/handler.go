@@ -20,23 +20,45 @@ package v1alpha3
 
 import (
 	"errors"
+	"regexp"
+	"strings"
+
+	"kubesphere.io/kubesphere/pkg/client/clientset/versioned"
+	"kubesphere.io/kubesphere/pkg/models/openpitrix"
+
 	"github.com/emicklei/go-restful"
 	"k8s.io/client-go/kubernetes"
+
 	"kubesphere.io/kubesphere/pkg/api"
 	"kubesphere.io/kubesphere/pkg/informers"
 	model "kubesphere.io/kubesphere/pkg/models/monitoring"
+	resourcev1alpha3 "kubesphere.io/kubesphere/pkg/models/resources/v1alpha3/resource"
+	meteringclient "kubesphere.io/kubesphere/pkg/simple/client/metering"
 	"kubesphere.io/kubesphere/pkg/simple/client/monitoring"
-	"kubesphere.io/kubesphere/pkg/simple/client/openpitrix"
-	"regexp"
 )
 
 type handler struct {
-	k  kubernetes.Interface
-	mo model.MonitoringOperator
+	k               kubernetes.Interface
+	mo              model.MonitoringOperator
+	opRelease       openpitrix.ReleaseInterface
+	meteringOptions *meteringclient.Options
 }
 
-func newHandler(k kubernetes.Interface, m monitoring.Interface, f informers.InformerFactory, o openpitrix.Client) *handler {
-	return &handler{k, model.NewMonitoringOperator(m, k, f, o)}
+func NewHandler(k kubernetes.Interface, monitoringClient monitoring.Interface, metricsClient monitoring.Interface, f informers.InformerFactory, ksClient versioned.Interface, resourceGetter *resourcev1alpha3.ResourceGetter, meteringOptions *meteringclient.Options) *handler {
+	var opRelease openpitrix.Interface
+	if ksClient != nil {
+		opRelease = openpitrix.NewOpenpitrixOperator(f, ksClient, nil)
+	}
+	if meteringOptions == nil || meteringOptions.RetentionDay == "" {
+		meteringOptions = &meteringclient.DefaultMeteringOption
+	}
+
+	return &handler{
+		k:               k,
+		mo:              model.NewMonitoringOperator(monitoringClient, metricsClient, k, f, resourceGetter),
+		opRelease:       opRelease,
+		meteringOptions: meteringOptions,
+	}
 }
 
 func (h handler) handleKubeSphereMetricsQuery(req *restful.Request, resp *restful.Response) {
@@ -186,6 +208,10 @@ func (h handler) handleNamedMetricsQuery(resp *restful.Response, q queryOptions)
 
 	var metrics []string
 	for _, metric := range q.namedMetrics {
+		if strings.HasPrefix(metric, model.MetricMeterPrefix) {
+			// skip meter metric
+			continue
+		}
 		ok, _ := regexp.MatchString(q.metricFilter, metric)
 		if ok {
 			metrics = append(metrics, metric)

@@ -22,8 +22,11 @@ import (
 	"k8s.io/apiserver/pkg/authentication/authenticator"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/klog"
+
+	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
+	"kubesphere.io/kubesphere/pkg/models/auth"
+
 	iamv1alpha2listers "kubesphere.io/kubesphere/pkg/client/listers/iam/v1alpha2"
-	"kubesphere.io/kubesphere/pkg/models/iam/im"
 )
 
 // TokenAuthenticator implements kubernetes token authenticate interface with our custom logic.
@@ -32,11 +35,11 @@ import (
 // and group from user.AllUnauthenticated. This helps requests be passed along the handler chain,
 // because some resources are public accessible.
 type tokenAuthenticator struct {
-	tokenOperator im.TokenManagementInterface
+	tokenOperator auth.TokenManagementInterface
 	userLister    iamv1alpha2listers.UserLister
 }
 
-func NewTokenAuthenticator(tokenOperator im.TokenManagementInterface, userLister iamv1alpha2listers.UserLister) authenticator.Token {
+func NewTokenAuthenticator(tokenOperator auth.TokenManagementInterface, userLister iamv1alpha2listers.UserLister) authenticator.Token {
 	return &tokenAuthenticator{
 		tokenOperator: tokenOperator,
 		userLister:    userLister,
@@ -46,8 +49,18 @@ func NewTokenAuthenticator(tokenOperator im.TokenManagementInterface, userLister
 func (t *tokenAuthenticator) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	providedUser, err := t.tokenOperator.Verify(token)
 	if err != nil {
-		klog.Error(err)
+		klog.Warning(err)
 		return nil, false, err
+	}
+
+	if providedUser.GetName() == iamv1alpha2.PreRegistrationUser {
+		return &authenticator.Response{
+			User: &user.DefaultInfo{
+				Name:   providedUser.GetName(),
+				Extra:  providedUser.GetExtra(),
+				Groups: providedUser.GetGroups(),
+			},
+		}, true, nil
 	}
 
 	dbUser, err := t.userLister.Get(providedUser.GetName())
@@ -57,8 +70,7 @@ func (t *tokenAuthenticator) AuthenticateToken(ctx context.Context, token string
 
 	return &authenticator.Response{
 		User: &user.DefaultInfo{
-			Name:   providedUser.GetName(),
-			UID:    providedUser.GetUID(),
+			Name:   dbUser.GetName(),
 			Groups: append(dbUser.Spec.Groups, user.AllAuthenticated),
 		},
 	}, true, nil

@@ -17,8 +17,11 @@ limitations under the License.
 package group
 
 import (
+	"context"
 	"fmt"
-	"time"
+	"reflect"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -26,7 +29,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -34,127 +36,84 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
 	iam1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
+	tenantv1alpha2 "kubesphere.io/kubesphere/pkg/apis/tenant/v1alpha2"
+	fedv1beta1types "kubesphere.io/kubesphere/pkg/apis/types/v1beta1"
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
 	iamv1alpha2informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/iam/v1alpha2"
+	fedv1beta1informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/types/v1beta1"
 	iamv1alpha1listers "kubesphere.io/kubesphere/pkg/client/listers/iam/v1alpha2"
+	fedv1beta1lister "kubesphere.io/kubesphere/pkg/client/listers/types/v1beta1"
+	"kubesphere.io/kubesphere/pkg/constants"
+	"kubesphere.io/kubesphere/pkg/controller/utils/controller"
+	"kubesphere.io/kubesphere/pkg/utils/k8sutil"
 	"kubesphere.io/kubesphere/pkg/utils/sliceutil"
 )
 
 const (
 	successSynced         = "Synced"
 	messageResourceSynced = "Group synced successfully"
-	controllerName        = "groupbinding-controller"
+	controllerName        = "group-controller"
 	finalizer             = "finalizers.kubesphere.io/groups"
 )
 
 type Controller struct {
-	scheme        *runtime.Scheme
-	k8sClient     kubernetes.Interface
-	ksClient      kubesphere.Interface
-	groupInformer iamv1alpha2informers.GroupInformer
-	groupLister   iamv1alpha1listers.GroupLister
-	groupSynced   cache.InformerSynced
-	workqueue     workqueue.RateLimitingInterface
-	recorder      record.EventRecorder
+	controller.BaseController
+	scheme               *runtime.Scheme
+	k8sClient            kubernetes.Interface
+	ksClient             kubesphere.Interface
+	groupInformer        iamv1alpha2informers.GroupInformer
+	groupLister          iamv1alpha1listers.GroupLister
+	recorder             record.EventRecorder
+	federatedGroupLister fedv1beta1lister.FederatedGroupLister
+	multiClusterEnabled  bool
 }
 
 // NewController creates Group Controller instance
-func NewController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface, groupInformer iamv1alpha2informers.GroupInformer) *Controller {
+func NewController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface, groupInformer iamv1alpha2informers.GroupInformer,
+	federatedGroupInformer fedv1beta1informers.FederatedGroupInformer,
+	multiClusterEnabled bool) *Controller {
 
 	klog.V(4).Info("Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(klog.Infof)
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: k8sClient.CoreV1().Events("")})
-	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerName})
 	ctl := &Controller{
-		k8sClient:     k8sClient,
-		ksClient:      ksClient,
-		groupInformer: groupInformer,
-		groupLister:   groupInformer.Lister(),
-		groupSynced:   groupInformer.Informer().HasSynced,
-		workqueue:     workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Group"),
-		recorder:      recorder,
+		BaseController: controller.BaseController{
+			Workqueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Group"),
+			Synced:    []cache.InformerSynced{groupInformer.Informer().HasSynced},
+			Name:      controllerName,
+		},
+		recorder:            eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerName}),
+		k8sClient:           k8sClient,
+		ksClient:            ksClient,
+		groupInformer:       groupInformer,
+		groupLister:         groupInformer.Lister(),
+		multiClusterEnabled: multiClusterEnabled,
 	}
+
+	if ctl.multiClusterEnabled {
+		ctl.federatedGroupLister = federatedGroupInformer.Lister()
+		ctl.Synced = append(ctl.Synced, federatedGroupInformer.Informer().HasSynced)
+	}
+
+	ctl.Handler = ctl.reconcile
+
 	klog.Info("Setting up event handlers")
 	groupInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: ctl.enqueueGroup,
+		AddFunc: ctl.Enqueue,
 		UpdateFunc: func(old, new interface{}) {
-			ctl.enqueueGroup(new)
+			ctl.Enqueue(new)
 		},
-		DeleteFunc: ctl.enqueueGroup,
+		DeleteFunc: ctl.Enqueue,
 	})
 	return ctl
 }
 
-func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
-	defer utilruntime.HandleCrash()
-	defer c.workqueue.ShutDown()
-
-	klog.Info("Starting Group controller")
-	klog.Info("Waiting for informer caches to sync")
-	synced := []cache.InformerSynced{c.groupSynced}
-	if ok := cache.WaitForCacheSync(stopCh, synced...); !ok {
-		return fmt.Errorf("failed to wait for caches to sync")
-	}
-
-	klog.Info("Starting workers")
-	for i := 0; i < threadiness; i++ {
-		go wait.Until(c.runWorker, time.Second, stopCh)
-	}
-
-	klog.Info("Started workers")
-	<-stopCh
-	klog.Info("Shutting down workers")
-	return nil
-}
-
-func (c *Controller) enqueueGroup(obj interface{}) {
-	var key string
-	var err error
-	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
-		utilruntime.HandleError(err)
-		return
-	}
-	c.workqueue.Add(key)
-}
-
-func (c *Controller) runWorker() {
-	for c.processNextWorkItem() {
-	}
-}
-
-func (c *Controller) processNextWorkItem() bool {
-	obj, shutdown := c.workqueue.Get()
-
-	if shutdown {
-		return false
-	}
-	err := func(obj interface{}) error {
-		defer c.workqueue.Done(obj)
-		var key string
-		var ok bool
-
-		if key, ok = obj.(string); !ok {
-			c.workqueue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-			return nil
-		}
-		if err := c.reconcile(key); err != nil {
-			c.workqueue.AddRateLimited(key)
-			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
-		}
-		c.workqueue.Forget(obj)
-		klog.Infof("Successfully synced %s:%s", "key", key)
-		return nil
-	}(obj)
-
-	if err != nil {
-		utilruntime.HandleError(err)
-		return true
-	}
-
-	return true
+func (c *Controller) Start(stopCh <-chan struct{}) error {
+	return c.Run(1, stopCh)
 }
 
 // reconcile handles Group informer events, clear up related reource when group is being deleted.
@@ -170,10 +129,74 @@ func (c *Controller) reconcile(key string) error {
 		return err
 	}
 	if group.ObjectMeta.DeletionTimestamp.IsZero() {
+		var g *iam1alpha2.Group
 		if !sliceutil.HasString(group.Finalizers, finalizer) {
-			group.ObjectMeta.Finalizers = append(group.ObjectMeta.Finalizers, finalizer)
+			g = group.DeepCopy()
+			g.ObjectMeta.Finalizers = append(g.ObjectMeta.Finalizers, finalizer)
+		}
 
-			if group, err = c.ksClient.IamV1alpha2().Groups().Update(group); err != nil {
+		if c.multiClusterEnabled {
+			// Ensure not controlled by Kubefed
+			if group.Labels == nil || group.Labels[constants.KubefedManagedLabel] != "false" {
+				if g == nil {
+					g = group.DeepCopy()
+				}
+				if g.Labels == nil {
+					g.Labels = make(map[string]string, 0)
+				}
+				g.Labels[constants.KubefedManagedLabel] = "false"
+			}
+		}
+
+		// Set OwnerReferences when the group has a parent or Workspace. And it's not owned by kubefed
+		if group.Labels != nil && group.Labels[constants.KubefedManagedLabel] != "true" {
+			if parent, ok := group.Labels[iam1alpha2.GroupParent]; ok {
+				// If the Group is owned by a Parent
+				if !k8sutil.IsControlledBy(group.OwnerReferences, "Group", parent) {
+					if g == nil {
+						g = group.DeepCopy()
+					}
+					groupParent, err := c.groupLister.Get(parent)
+					if err != nil {
+						if errors.IsNotFound(err) {
+							utilruntime.HandleError(fmt.Errorf("Parent group '%s' no longer exists", key))
+							delete(g.Labels, iam1alpha2.GroupParent)
+						} else {
+							klog.Error(err)
+							return err
+						}
+					} else {
+						if err := controllerutil.SetControllerReference(groupParent, g, scheme.Scheme); err != nil {
+							klog.Error(err)
+							return err
+						}
+					}
+				}
+			} else if ws, ok := group.Labels[constants.WorkspaceLabelKey]; ok {
+				// If the Group is owned by a Workspace
+				if !k8sutil.IsControlledBy(group.OwnerReferences, tenantv1alpha2.ResourceKindWorkspaceTemplate, ws) {
+					workspace, err := c.ksClient.TenantV1alpha2().WorkspaceTemplates().Get(context.Background(), ws, metav1.GetOptions{})
+					if err != nil {
+						if errors.IsNotFound(err) {
+							utilruntime.HandleError(fmt.Errorf("Workspace '%s' no longer exists", ws))
+						} else {
+							klog.Error(err)
+							return err
+						}
+					} else {
+						if g == nil {
+							g = group.DeepCopy()
+						}
+						g.OwnerReferences = k8sutil.RemoveWorkspaceOwnerReference(g.OwnerReferences)
+						if err := controllerutil.SetControllerReference(workspace, g, scheme.Scheme); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
+		if g != nil {
+			if _, err = c.ksClient.IamV1alpha2().Groups().Update(context.Background(), g, metav1.UpdateOptions{}); err != nil {
 				return err
 			}
 			// Skip reconcile when group is updated.
@@ -196,31 +219,36 @@ func (c *Controller) reconcile(key string) error {
 				return item == finalizer
 			})
 
-			if group, err = c.ksClient.IamV1alpha2().Groups().Update(group); err != nil {
+			if group, err = c.ksClient.IamV1alpha2().Groups().Update(context.Background(), group, metav1.UpdateOptions{}); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
+	// synchronization through kubefed-controller when multi cluster is enabled
+	if c.multiClusterEnabled {
+		if err = c.multiClusterSync(group); err != nil {
+			klog.Error(err)
+			return err
+		}
+	}
+
 	c.recorder.Event(group, corev1.EventTypeNormal, successSynced, messageResourceSynced)
 	return nil
 }
 
-func (c *Controller) Start(stopCh <-chan struct{}) error {
-	return c.Run(1, stopCh)
-}
-
 func (c *Controller) deleteGroupBindings(group *iam1alpha2.Group) error {
-
-	// Groupbindings that created by kubeshpere will be deleted directly.
-	listOptions := metav1.ListOptions{
-		LabelSelector: labels.SelectorFromSet(labels.Set{iam1alpha2.GroupReferenceLabel: group.Name}).String(),
+	if len(group.Name) > validation.LabelValueMaxLength {
+		// ignore invalid label value error
+		return nil
 	}
-	deleteOptions := metav1.NewDeleteOptions(0)
-
+	// Groupbindings that created by kubesphere will be deleted directly.
+	listOptions := metav1.ListOptions{
+		LabelSelector: labels.SelectorFromValidatedSet(labels.Set{iam1alpha2.GroupReferenceLabel: group.Name}).String(),
+	}
 	if err := c.ksClient.IamV1alpha2().GroupBindings().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), *metav1.NewDeleteOptions(0), listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
@@ -229,34 +257,89 @@ func (c *Controller) deleteGroupBindings(group *iam1alpha2.Group) error {
 
 // remove all RoleBindings.
 func (c *Controller) deleteRoleBindings(group *iam1alpha2.Group) error {
-	listOptions := metav1.ListOptions{
-		LabelSelector: labels.SelectorFromSet(labels.Set{iam1alpha2.GroupReferenceLabel: group.Name}).String(),
+	if len(group.Name) > validation.LabelValueMaxLength {
+		// ignore invalid label value error
+		return nil
 	}
-	deleteOptions := metav1.NewDeleteOptions(0)
+	listOptions := metav1.ListOptions{
+		LabelSelector: labels.SelectorFromValidatedSet(labels.Set{iam1alpha2.GroupReferenceLabel: group.Name}).String(),
+	}
+	deleteOptions := *metav1.NewDeleteOptions(0)
 
 	if err := c.ksClient.IamV1alpha2().WorkspaceRoleBindings().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), deleteOptions, listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
 
 	if err := c.k8sClient.RbacV1().ClusterRoleBindings().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), deleteOptions, listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
 
-	if result, err := c.k8sClient.CoreV1().Namespaces().List(metav1.ListOptions{}); err != nil {
+	if result, err := c.k8sClient.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{}); err != nil {
 		klog.Error(err)
 		return err
 	} else {
 		for _, namespace := range result.Items {
-			if err = c.k8sClient.RbacV1().RoleBindings(namespace.Name).DeleteCollection(deleteOptions, listOptions); err != nil {
+			if err = c.k8sClient.RbacV1().RoleBindings(namespace.Name).DeleteCollection(context.Background(), deleteOptions, listOptions); err != nil {
 				klog.Error(err)
 				return err
 			}
 		}
 	}
 
+	return nil
+}
+
+func (c *Controller) multiClusterSync(group *iam1alpha2.Group) error {
+
+	obj, err := c.federatedGroupLister.Get(group.Name)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return c.createFederatedGroup(group)
+		}
+		klog.Error(err)
+		return err
+	}
+
+	if !reflect.DeepEqual(obj.Spec.Template.Labels, group.Labels) {
+
+		obj.Spec.Template.Labels = group.Labels
+
+		if _, err = c.ksClient.TypesV1beta1().FederatedGroups().Update(context.Background(), obj, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Controller) createFederatedGroup(group *iam1alpha2.Group) error {
+	federatedGroup := &fedv1beta1types.FederatedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: group.Name,
+		},
+		Spec: fedv1beta1types.FederatedGroupSpec{
+			Template: fedv1beta1types.GroupTemplate{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: group.Labels,
+				},
+				Spec: group.Spec,
+			},
+			Placement: fedv1beta1types.GenericPlacementFields{
+				ClusterSelector: &metav1.LabelSelector{},
+			},
+		},
+	}
+
+	// must bind group lifecycle
+	err := controllerutil.SetControllerReference(group, federatedGroup, scheme.Scheme)
+	if err != nil {
+		return err
+	}
+	if _, err = c.ksClient.TypesV1beta1().FederatedGroups().Create(context.Background(), federatedGroup, metav1.CreateOptions{}); err != nil {
+		return err
+	}
 	return nil
 }

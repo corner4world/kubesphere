@@ -18,6 +18,7 @@ package lib
 
 import (
 	"context"
+
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -101,6 +102,10 @@ func (r *StandardStorage) DeleteCollection(ctx context.Context, deleteValidation
 
 // Watcher
 func (r *StandardStorage) Watch(ctx context.Context, options *metainternalversion.ListOptions) (watch.Interface, error) {
+	return nil, nil
+}
+
+func (r *StandardStorage) ConvertToTable(ctx context.Context, object runtime.Object, tableOptions runtime.Object) (*metav1.Table, error) {
 	return nil, nil
 }
 

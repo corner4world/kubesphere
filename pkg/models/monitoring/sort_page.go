@@ -17,19 +17,22 @@ limitations under the License.
 package monitoring
 
 import (
-	"kubesphere.io/kubesphere/pkg/simple/client/monitoring"
 	"math"
 	"sort"
+
+	"kubesphere.io/kubesphere/pkg/simple/client/monitoring"
 )
 
 const (
-	IdentifierNode      = "node"
-	IdentifierWorkspace = "workspace"
-	IdentifierNamespace = "namespace"
-	IdentifierWorkload  = "workload"
-	IdentifierPod       = "pod"
-	IdentifierContainer = "container"
-	IdentifierPVC       = "persistentvolumeclaim"
+	IdentifierNode        = "node"
+	IdentifierWorkspace   = "workspace"
+	IdentifierNamespace   = "namespace"
+	IdentifierWorkload    = "workload"
+	IdentifierPod         = "pod"
+	IdentifierContainer   = "container"
+	IdentifierPVC         = "persistentvolumeclaim"
+	IdentifierService     = "service"
+	IdentifierApplication = "application"
 
 	OrderAscending  = "asc"
 	OrderDescending = "desc"

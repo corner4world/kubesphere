@@ -18,6 +18,7 @@ package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 )
 
@@ -27,7 +28,6 @@ const (
 	FederatedUserKind             = "FederatedUser"
 )
 
-// +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:openapi-gen=true
 type FederatedUser struct {
@@ -50,7 +50,7 @@ type UserTemplate struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// FederatedUserList contains a list of federateduserlists
+// FederatedUserList contains a list of FederatedUser
 type FederatedUserList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`

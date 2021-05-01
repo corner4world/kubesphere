@@ -17,16 +17,17 @@ limitations under the License.
 package s3
 
 import (
-	"code.cloudfoundry.org/bytefmt"
 	"fmt"
+	"io"
+	"time"
+
+	"code.cloudfoundry.org/bytefmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"io"
 	"k8s.io/klog"
-	"time"
 )
 
 type Client struct {
@@ -47,6 +48,24 @@ func (s *Client) Upload(key, fileName string, body io.Reader) error {
 		ContentDisposition: aws.String(fmt.Sprintf("attachment; filename=\"%s\"", fileName)),
 	})
 	return err
+}
+
+func (s *Client) Read(key string) ([]byte, error) {
+
+	downloader := s3manager.NewDownloader(s.s3Session)
+
+	writer := aws.NewWriteAtBuffer([]byte{})
+	_, err := downloader.Download(writer,
+		&s3.GetObjectInput{
+			Bucket: aws.String(s.bucket),
+			Key:    aws.String(key),
+		})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return writer.Bytes(), nil
 }
 
 func (s *Client) GetDownloadURL(key string, fileName string) (string, error) {

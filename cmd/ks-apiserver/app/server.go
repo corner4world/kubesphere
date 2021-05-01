@@ -18,13 +18,9 @@ package app
 
 import (
 	"fmt"
-	"github.com/kiali/kiali/business"
-	kconfig "github.com/kiali/kiali/config"
-	"github.com/kiali/kiali/kubernetes"
-	"github.com/kiali/kiali/prometheus"
+
 	"github.com/spf13/cobra"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/client-go/tools/clientcmd"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/klog"
 
@@ -32,6 +28,7 @@ import (
 	apiserverconfig "kubesphere.io/kubesphere/pkg/apiserver/config"
 	"kubesphere.io/kubesphere/pkg/utils/signals"
 	"kubesphere.io/kubesphere/pkg/utils/term"
+	"kubesphere.io/kubesphere/pkg/version"
 
 	tracing "kubesphere.io/kubesphere/pkg/kapis/servicemesh/metrics/v1alpha2"
 )
@@ -77,6 +74,17 @@ cluster's shared state through which all other components interact.`,
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n\n"+usageFmt, cmd.Long, cmd.UseLine())
 		cliflag.PrintSections(cmd.OutOrStdout(), namedFlagSets, cols)
 	})
+
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print the version of KubeSphere ks-apiserver",
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.Println(version.Get())
+		},
+	}
+
+	cmd.AddCommand(versionCmd)
+
 	return cmd
 }
 
@@ -98,36 +106,13 @@ func Run(s *options.ServerRunOptions, stopCh <-chan struct{}) error {
 }
 
 func initializeServicemeshConfig(s *options.ServerRunOptions) {
-	// Initialize kiali config
-	config := kconfig.NewConfig()
-
 	// Config jaeger query endpoint address
 	if s.ServiceMeshOptions != nil && len(s.ServiceMeshOptions.JaegerQueryHost) != 0 {
 		tracing.JaegerQueryUrl = s.ServiceMeshOptions.JaegerQueryHost
 	}
 
-	// Exclude system namespaces
-	config.API.Namespaces.Exclude = []string{"istio-system", "kubesphere*", "kube*"}
-	config.InCluster = true
-
-	// Set default prometheus service url
-	config.ExternalServices.PrometheusServiceURL = s.ServiceMeshOptions.ServicemeshPrometheusHost
-	config.ExternalServices.PrometheusCustomMetricsURL = config.ExternalServices.PrometheusServiceURL
-
-	// Set istio pilot discovery service url
-	config.ExternalServices.Istio.UrlServiceVersion = s.ServiceMeshOptions.IstioPilotHost
-
-	kconfig.Set(config)
-
-	// Set kiali config
-	kubeconfig, err := clientcmd.BuildConfigFromFlags("", s.KubernetesOptions.KubeConfig)
-	if err != nil {
-		fmt.Println(err)
+	// Set the kiali query endpoint address
+	if s.ServiceMeshOptions != nil && len(s.ServiceMeshOptions.KialiQueryHost) != 0 {
+		tracing.KialiQueryUrl = s.ServiceMeshOptions.KialiQueryHost
 	}
-	k8sClient, err := kubernetes.NewClientFromConfig(kubeconfig)
-	if err != nil {
-		fmt.Println(err)
-	}
-	prometheusClient, _ := prometheus.NewClient()
-	business.SetWithBackends(k8sClient, prometheusClient)
 }

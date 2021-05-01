@@ -17,10 +17,12 @@ limitations under the License.
 package prometheus
 
 import (
+	"testing"
+
 	"github.com/google/go-cmp/cmp"
+
 	"kubesphere.io/kubesphere/pkg/simple/client/monitoring"
 	"kubesphere.io/kubesphere/pkg/simple/client/monitoring/prometheus/testdata"
-	"testing"
 )
 
 func TestMakeExpr(t *testing.T) {
@@ -133,6 +135,13 @@ func TestMakeExpr(t *testing.T) {
 				Level:    monitoring.LevelPod,
 				NodeName: "i-2dazc1d6",
 				PodName:  "elasticsearch-12345",
+			},
+		},
+		{
+			name: "pod_net_bytes_transmitted",
+			opts: monitoring.QueryOptions{
+				Level:                     monitoring.LevelPod,
+				NamespacedResourcesFilter: "logging/elasticsearch-0|ks/redis",
 			},
 		},
 		{

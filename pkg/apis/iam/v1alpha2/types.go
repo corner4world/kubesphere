@@ -58,13 +58,24 @@ const (
 	GlobalRoleAnnotation                  = "iam.kubesphere.io/globalrole"
 	WorkspaceRoleAnnotation               = "iam.kubesphere.io/workspacerole"
 	ClusterRoleAnnotation                 = "iam.kubesphere.io/clusterrole"
+	UninitializedAnnotation               = "iam.kubesphere.io/uninitialized"
+	LastPasswordChangeTimeAnnotation      = "iam.kubesphere.io/last-password-change-time"
 	RoleAnnotation                        = "iam.kubesphere.io/role"
 	RoleTemplateLabel                     = "iam.kubesphere.io/role-template"
 	ScopeLabelFormat                      = "scope.kubesphere.io/%s"
 	UserReferenceLabel                    = "iam.kubesphere.io/user-ref"
 	IdentifyProviderLabel                 = "iam.kubesphere.io/identify-provider"
-	PasswordEncryptedAnnotation           = "iam.kubesphere.io/password-encrypted"
+	OriginUIDLabel                        = "iam.kubesphere.io/origin-uid"
+	ServiceAccountReferenceLabel          = "iam.kubesphere.io/serviceaccount-ref"
 	FieldEmail                            = "email"
+	ExtraEmail                            = FieldEmail
+	ExtraIdentityProvider                 = "idp"
+	ExtraUID                              = "uid"
+	ExtraUsername                         = "username"
+	ExtraDisplayName                      = "displayName"
+	ExtraUninitialized                    = "uninitialized"
+	InGroup                               = "ingroup"
+	NotInGroup                            = "notingroup"
 	AggregateTo                           = "aggregateTo"
 	ScopeWorkspace                        = "workspace"
 	ScopeCluster                          = "cluster"
@@ -72,8 +83,9 @@ const (
 	ScopeDevOps                           = "devops"
 	PlatformAdmin                         = "platform-admin"
 	NamespaceAdmin                        = "admin"
-	WorkspaceAdminFormat                  = "%s-admin"
 	ClusterAdmin                          = "cluster-admin"
+	PreRegistrationUser                   = "system:pre-registration"
+	PreRegistrationUserGroup              = "pre-registration"
 )
 
 // +genclient
@@ -87,7 +99,6 @@ const (
 // +kubebuilder:resource:categories="iam",scope="Cluster"
 type User struct {
 	metav1.TypeMeta `json:",inline"`
-	// Standard object's metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
@@ -124,7 +135,7 @@ const (
 	UserActive UserState = "Active"
 	// UserDisabled means the user is disabled.
 	UserDisabled UserState = "Disabled"
-	// UserDisabled means the user is disabled.
+	// UserAuthLimitExceeded means restrict user login.
 	UserAuthLimitExceeded UserState = "AuthLimitExceeded"
 
 	AuthenticatedSuccessfully = "authenticated successfully"
@@ -134,7 +145,7 @@ const (
 type UserStatus struct {
 	// The user status
 	// +optional
-	State UserState `json:"state,omitempty"`
+	State *UserState `json:"state,omitempty"`
 	// +optional
 	Reason string `json:"reason,omitempty"`
 	// +optional
@@ -162,7 +173,6 @@ type UserList struct {
 // +kubebuilder:resource:categories="iam",scope="Cluster"
 type GlobalRole struct {
 	metav1.TypeMeta `json:",inline"`
-	// Standard object's metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
@@ -188,7 +198,6 @@ type GlobalRoleList struct {
 // +kubebuilder:resource:categories="iam",scope="Cluster"
 type GlobalRoleBinding struct {
 	metav1.TypeMeta `json:",inline"`
-	// Standard object's metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
@@ -221,7 +230,6 @@ type GlobalRoleBindingList struct {
 // +kubebuilder:resource:categories="iam",scope="Cluster"
 type WorkspaceRole struct {
 	metav1.TypeMeta `json:",inline"`
-	// Standard object's metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 

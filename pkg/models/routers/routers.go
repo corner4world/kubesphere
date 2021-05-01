@@ -17,8 +17,12 @@ limitations under the License.
 package routers
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
+	"sort"
+	"strings"
+
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -29,8 +33,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog"
-	"sort"
-	"strings"
 )
 
 // choose router node ip by labels, currently select master node
@@ -251,7 +253,7 @@ func (c *routerOperator) createRouterService(namespace string, routerType corev1
 	// Add project selector
 	service.Labels["project"] = namespace
 	service.Spec.Selector["project"] = namespace
-	service, err := c.client.CoreV1().Services(ingressControllerNamespace).Create(service)
+	service, err := c.client.CoreV1().Services(ingressControllerNamespace).Create(context.Background(), service, metav1.CreateOptions{})
 	if err != nil {
 		klog.Error(err)
 		return nil, err
@@ -269,7 +271,7 @@ func (c *routerOperator) updateRouterService(namespace string, routerType corev1
 
 	service.Spec.Type = routerType
 	service.SetAnnotations(annotations)
-	service, err = c.client.CoreV1().Services(ingressControllerNamespace).Update(service)
+	service, err = c.client.CoreV1().Services(ingressControllerNamespace).Update(context.Background(), service, metav1.UpdateOptions{})
 	return service, err
 }
 
@@ -283,9 +285,8 @@ func (c *routerOperator) deleteRouterService(namespace string) (*corev1.Service,
 
 	// delete controller service
 	serviceName := ingressControllerPrefix + namespace
-	deleteOptions := metav1.DeleteOptions{}
 
-	err = c.client.CoreV1().Services(ingressControllerNamespace).Delete(serviceName, &deleteOptions)
+	err = c.client.CoreV1().Services(ingressControllerNamespace).Delete(context.Background(), serviceName, metav1.DeleteOptions{})
 	if err != nil {
 		klog.Error(err)
 		return service, err
@@ -303,7 +304,7 @@ func (c *routerOperator) createOrUpdateRouterWorkload(namespace string, publishS
 
 	deployName := ingressControllerPrefix + namespace
 
-	deployment, err := c.client.AppsV1().Deployments(ingressControllerNamespace).Get(deployName, metav1.GetOptions{})
+	deployment, err := c.client.AppsV1().Deployments(ingressControllerNamespace).Get(context.Background(), deployName, metav1.GetOptions{})
 
 	createDeployment := true
 
@@ -363,9 +364,9 @@ func (c *routerOperator) createOrUpdateRouterWorkload(namespace string, publishS
 	}
 
 	if createDeployment {
-		deployment, err = c.client.AppsV1().Deployments(ingressControllerNamespace).Create(deployment)
+		deployment, err = c.client.AppsV1().Deployments(ingressControllerNamespace).Create(context.Background(), deployment, metav1.CreateOptions{})
 	} else {
-		deployment, err = c.client.AppsV1().Deployments(ingressControllerNamespace).Update(deployment)
+		deployment, err = c.client.AppsV1().Deployments(ingressControllerNamespace).Update(context.Background(), deployment, metav1.UpdateOptions{})
 	}
 
 	if err != nil {
@@ -377,10 +378,9 @@ func (c *routerOperator) createOrUpdateRouterWorkload(namespace string, publishS
 }
 
 func (c *routerOperator) deleteRouterWorkload(namespace string) error {
-	deleteOptions := metav1.DeleteOptions{}
 	// delete controller deployment
 	deploymentName := ingressControllerPrefix + namespace
-	err := c.client.AppsV1().Deployments(ingressControllerNamespace).Delete(deploymentName, &deleteOptions)
+	err := c.client.AppsV1().Deployments(ingressControllerNamespace).Delete(context.Background(), deploymentName, metav1.DeleteOptions{})
 	if err != nil {
 		klog.Error(err)
 	}
@@ -400,7 +400,7 @@ func (c *routerOperator) deleteRouterWorkload(namespace string) error {
 	}
 
 	for i := range replicaSets {
-		err = c.client.AppsV1().ReplicaSets(ingressControllerNamespace).Delete(replicaSets[i].Name, &deleteOptions)
+		err = c.client.AppsV1().ReplicaSets(ingressControllerNamespace).Delete(context.Background(), replicaSets[i].Name, metav1.DeleteOptions{})
 		if err != nil {
 			klog.Error(err)
 		}

@@ -17,15 +17,17 @@ limitations under the License.
 package oauth
 
 import (
+	"net/http"
+
 	"github.com/emicklei/go-restful"
 	restfulspec "github.com/emicklei/go-restful-openapi"
+
 	"kubesphere.io/kubesphere/pkg/api"
-	"kubesphere.io/kubesphere/pkg/api/auth"
 	"kubesphere.io/kubesphere/pkg/apiserver/authentication/oauth"
 	authoptions "kubesphere.io/kubesphere/pkg/apiserver/authentication/options"
 	"kubesphere.io/kubesphere/pkg/constants"
+	"kubesphere.io/kubesphere/pkg/models/auth"
 	"kubesphere.io/kubesphere/pkg/models/iam/im"
-	"net/http"
 )
 
 // ks-apiserver includes a built-in OAuth server. Users obtain OAuth access tokens to authenticate themselves to the API.
@@ -34,22 +36,28 @@ import (
 // Most authentication integrations place an authenticating proxy in front of this endpoint, or configure ks-apiserver
 // to validate credentials against a backing identity provider.
 // Requests to <ks-apiserver>/oauth/authorize can come from user-agents that cannot display interactive login pages, such as the CLI.
-func AddToContainer(c *restful.Container, im im.IdentityManagementInterface, tokenOperator im.TokenManagementInterface, authenticator im.PasswordAuthenticator, loginRecorder im.LoginRecorder, options *authoptions.AuthenticationOptions) error {
+func AddToContainer(c *restful.Container, im im.IdentityManagementInterface,
+	tokenOperator auth.TokenManagementInterface,
+	passwordAuthenticator auth.PasswordAuthenticator,
+	oauth2Authenticator auth.OAuthAuthenticator,
+	loginRecorder auth.LoginRecorder,
+	options *authoptions.AuthenticationOptions) error {
+
 	ws := &restful.WebService{}
 	ws.Path("/oauth").
 		Consumes(restful.MIME_JSON).
 		Produces(restful.MIME_JSON)
 
-	handler := newHandler(im, tokenOperator, authenticator, loginRecorder, options)
+	handler := newHandler(im, tokenOperator, passwordAuthenticator, oauth2Authenticator, loginRecorder, options)
 
 	// Implement webhook authentication interface
 	// https://kubernetes.io/docs/reference/access-authn-authz/authentication/#webhook-token-authentication
 	ws.Route(ws.POST("/authenticate").
 		Doc("TokenReview attempts to authenticate a token to a known user. Note: TokenReview requests may be "+
 			"cached by the webhook token authenticator plugin in the kube-apiserver.").
-		Reads(auth.TokenReview{}).
+		Reads(TokenReview{}).
 		To(handler.TokenReview).
-		Returns(http.StatusOK, api.StatusOK, auth.TokenReview{}).
+		Returns(http.StatusOK, api.StatusOK, TokenReview{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.AuthenticationTag}))
 
 	// Only support implicit grant flow
@@ -98,8 +106,25 @@ func AddToContainer(c *restful.Container, im im.IdentityManagementInterface, tok
 			"otherwise, REQUIRED.  The scope of the access token as described by [RFC6479] Section 3.3.").Required(false)).
 		Param(ws.QueryParameter("state", "if the \"state\" parameter was present in the client authorization request."+
 			"The exact value received from the client.").Required(true)).
-		To(handler.oAuthCallBack).
+		To(handler.oauthCallback).
 		Returns(http.StatusOK, api.StatusOK, oauth.Token{}).
+		Metadata(restfulspec.KeyOpenAPITags, []string{constants.AuthenticationTag}))
+
+	// https://openid.net/specs/openid-connect-rpinitiated-1_0.html
+	ws.Route(ws.GET("/logout").
+		Doc("This endpoint takes an ID token and logs the user out of KubeSphere if the "+
+			"subject matches the current session.").
+		Param(ws.QueryParameter("id_token_hint", "ID Token previously issued by the OP "+
+			"to the RP passed to the Logout Endpoint as a hint about the End-User's current authenticated "+
+			"session with the Client. This is used as an indication of the identity of the End-User that "+
+			"the RP is requesting be logged out by the OP.").Required(false)).
+		Param(ws.QueryParameter("post_logout_redirect_uri", "URL to which the RP is requesting "+
+			"that the End-User's User Agent be redirected after a logout has been performed. ").Required(false)).
+		Param(ws.QueryParameter("state", "Opaque value used by the RP to maintain state between "+
+			"the logout request and the callback to the endpoint specified by the post_logout_redirect_uri parameter.").
+			Required(false)).
+		To(handler.Logout).
+		Returns(http.StatusOK, http.StatusText(http.StatusOK), "").
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.AuthenticationTag}))
 
 	c.Add(ws)
@@ -113,7 +138,7 @@ func AddToContainer(c *restful.Container, im im.IdentityManagementInterface, tok
 		To(handler.Login).
 		Deprecate().
 		Doc("KubeSphere APIs support token-based authentication via the Authtoken request header. The POST Login API is used to retrieve the authentication token. After the authentication token is obtained, it must be inserted into the Authtoken header for all requests.").
-		Reads(auth.LoginRequest{}).
+		Reads(LoginRequest{}).
 		Returns(http.StatusOK, api.StatusOK, oauth.Token{}).
 		Metadata(restfulspec.KeyOpenAPITags, []string{constants.AuthenticationTag}))
 

@@ -17,15 +17,16 @@ limitations under the License.
 package groupbinding
 
 import (
+	"context"
 	"fmt"
-	"time"
+
+	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -33,12 +34,19 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
 	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
+	fedv1beta1types "kubesphere.io/kubesphere/pkg/apis/types/v1beta1"
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
 	iamv1alpha2informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/iam/v1alpha2"
+	fedv1beta1informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/types/v1beta1"
 	iamv1alpha2listers "kubesphere.io/kubesphere/pkg/client/listers/iam/v1alpha2"
+	fedv1beta1lister "kubesphere.io/kubesphere/pkg/client/listers/types/v1beta1"
+	"kubesphere.io/kubesphere/pkg/constants"
+	"kubesphere.io/kubesphere/pkg/controller/utils/controller"
 	"kubesphere.io/kubesphere/pkg/utils/sliceutil"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -49,113 +57,51 @@ const (
 )
 
 type Controller struct {
-	scheme               *runtime.Scheme
-	k8sClient            kubernetes.Interface
-	ksClient             kubesphere.Interface
-	groupBindingInformer iamv1alpha2informers.GroupBindingInformer
-	groupBindingLister   iamv1alpha2listers.GroupBindingLister
-	groupBindingSynced   cache.InformerSynced
-	workqueue            workqueue.RateLimitingInterface
-	recorder             record.EventRecorder
+	controller.BaseController
+	scheme                      *runtime.Scheme
+	k8sClient                   kubernetes.Interface
+	ksClient                    kubesphere.Interface
+	groupBindingLister          iamv1alpha2listers.GroupBindingLister
+	recorder                    record.EventRecorder
+	federatedGroupBindingLister fedv1beta1lister.FederatedGroupBindingLister
+	multiClusterEnabled         bool
 }
 
 // NewController creates GroupBinding Controller instance
-func NewController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface, groupBindingInformer iamv1alpha2informers.GroupBindingInformer) *Controller {
+func NewController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface,
+	groupBindingInformer iamv1alpha2informers.GroupBindingInformer,
+	federatedGroupBindingInformer fedv1beta1informers.FederatedGroupBindingInformer, multiClusterEnabled bool) *Controller {
 	klog.V(4).Info("Creating event broadcaster")
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(klog.Infof)
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: k8sClient.CoreV1().Events("")})
 	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerName})
 	ctl := &Controller{
-		k8sClient:            k8sClient,
-		ksClient:             ksClient,
-		groupBindingInformer: groupBindingInformer,
-		groupBindingLister:   groupBindingInformer.Lister(),
-		groupBindingSynced:   groupBindingInformer.Informer().HasSynced,
-		workqueue:            workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "GroupBinding"),
-		recorder:             recorder,
+		BaseController: controller.BaseController{
+			Workqueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "GroupBinding"),
+			Synced:    []cache.InformerSynced{groupBindingInformer.Informer().HasSynced},
+			Name:      controllerName,
+		},
+		k8sClient:           k8sClient,
+		ksClient:            ksClient,
+		groupBindingLister:  groupBindingInformer.Lister(),
+		multiClusterEnabled: multiClusterEnabled,
+		recorder:            recorder,
+	}
+	ctl.Handler = ctl.reconcile
+	if ctl.multiClusterEnabled {
+		ctl.federatedGroupBindingLister = federatedGroupBindingInformer.Lister()
+		ctl.Synced = append(ctl.Synced, federatedGroupBindingInformer.Informer().HasSynced)
 	}
 	klog.Info("Setting up event handlers")
 	groupBindingInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: ctl.enqueueGroupBinding,
+		AddFunc: ctl.Enqueue,
 		UpdateFunc: func(old, new interface{}) {
-			ctl.enqueueGroupBinding(new)
+			ctl.Enqueue(new)
 		},
-		DeleteFunc: ctl.enqueueGroupBinding,
+		DeleteFunc: ctl.Enqueue,
 	})
 	return ctl
-}
-
-func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
-	defer utilruntime.HandleCrash()
-	defer c.workqueue.ShutDown()
-
-	klog.Info("Starting GroupBinding controller")
-	klog.Info("Waiting for informer caches to sync")
-
-	synced := []cache.InformerSynced{c.groupBindingSynced}
-
-	if ok := cache.WaitForCacheSync(stopCh, synced...); !ok {
-		return fmt.Errorf("failed to wait for caches to sync")
-	}
-
-	klog.Info("Starting workers")
-	for i := 0; i < threadiness; i++ {
-		go wait.Until(c.runWorker, time.Second, stopCh)
-	}
-
-	klog.Info("Started workers")
-	<-stopCh
-	klog.Info("Shutting down workers")
-	return nil
-}
-
-func (c *Controller) enqueueGroupBinding(obj interface{}) {
-	var key string
-	var err error
-	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
-		utilruntime.HandleError(err)
-		return
-	}
-	c.workqueue.Add(key)
-}
-
-func (c *Controller) runWorker() {
-	for c.processNextWorkItem() {
-	}
-}
-
-func (c *Controller) processNextWorkItem() bool {
-	obj, shutdown := c.workqueue.Get()
-
-	if shutdown {
-		return false
-	}
-
-	err := func(obj interface{}) error {
-		defer c.workqueue.Done(obj)
-		var key string
-		var ok bool
-		if key, ok = obj.(string); !ok {
-			c.workqueue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-			return nil
-		}
-		if err := c.reconcile(key); err != nil {
-			c.workqueue.AddRateLimited(key)
-			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
-		}
-		c.workqueue.Forget(obj)
-		klog.Infof("Successfully synced %s:%s", "key", key)
-		return nil
-	}(obj)
-
-	if err != nil {
-		utilruntime.HandleError(err)
-		return true
-	}
-
-	return true
 }
 
 // reconcile handles GroupBinding informer events, it updates user's Groups property with the current GroupBinding.
@@ -171,14 +117,32 @@ func (c *Controller) reconcile(key string) error {
 		return err
 	}
 	if groupBinding.ObjectMeta.DeletionTimestamp.IsZero() {
+		var g *iamv1alpha2.GroupBinding
 		if !sliceutil.HasString(groupBinding.Finalizers, finalizer) {
-			groupBinding.ObjectMeta.Finalizers = append(groupBinding.ObjectMeta.Finalizers, finalizer)
-			if groupBinding, err = c.ksClient.IamV1alpha2().GroupBindings().Update(groupBinding); err != nil {
+			g = groupBinding.DeepCopy()
+			g.ObjectMeta.Finalizers = append(g.ObjectMeta.Finalizers, finalizer)
+		}
+
+		if c.multiClusterEnabled {
+			// Ensure not controlled by Kubefed
+			if groupBinding.Labels == nil || groupBinding.Labels[constants.KubefedManagedLabel] != "false" {
+				if g == nil {
+					g = groupBinding.DeepCopy()
+				}
+				if g.Labels == nil {
+					g.Labels = make(map[string]string, 0)
+				}
+				g.Labels[constants.KubefedManagedLabel] = "false"
+			}
+		}
+		if g != nil {
+			if groupBinding, err = c.ksClient.IamV1alpha2().GroupBindings().Update(context.Background(), g, metav1.UpdateOptions{}); err != nil {
 				return err
 			}
-			// Skip reconcile when groupbinding is updated.
+			// Skip reconcile when group is updated.
 			return nil
 		}
+
 	} else {
 		// The object is being deleted
 		if sliceutil.HasString(groupBinding.ObjectMeta.Finalizers, finalizer) {
@@ -191,7 +155,7 @@ func (c *Controller) reconcile(key string) error {
 				return item == finalizer
 			})
 
-			if groupBinding, err = c.ksClient.IamV1alpha2().GroupBindings().Update(groupBinding); err != nil {
+			if groupBinding, err = c.ksClient.IamV1alpha2().GroupBindings().Update(context.Background(), groupBinding, metav1.UpdateOptions{}); err != nil {
 				return err
 			}
 		}
@@ -201,6 +165,14 @@ func (c *Controller) reconcile(key string) error {
 	if err = c.bindUser(groupBinding); err != nil {
 		klog.Error(err)
 		return err
+	}
+
+	// synchronization through kubefed-controller when multi cluster is enabled
+	if c.multiClusterEnabled {
+		if err = c.multiClusterSync(groupBinding); err != nil {
+			klog.Error(err)
+			return err
+		}
 	}
 
 	c.recorder.Event(groupBinding, corev1.EventTypeNormal, successSynced, messageResourceSynced)
@@ -240,7 +212,7 @@ func (c *Controller) updateUserGroups(groupBinding *iamv1alpha2.GroupBinding, op
 
 	for _, u := range groupBinding.Users {
 		// Ignore the user if the user if being deleted.
-		if user, err := c.ksClient.IamV1alpha2().Users().Get(u, metav1.GetOptions{}); err == nil && user.ObjectMeta.DeletionTimestamp.IsZero() {
+		if user, err := c.ksClient.IamV1alpha2().Users().Get(context.Background(), u, metav1.GetOptions{}); err == nil && user.ObjectMeta.DeletionTimestamp.IsZero() {
 
 			if errors.IsNotFound(err) {
 				klog.Infof("user %s doesn't exist any more", u)
@@ -269,7 +241,69 @@ func (c *Controller) patchUser(user *iamv1alpha2.User, groups []string) error {
 	patch := client.MergeFrom(user)
 	patchData, _ := patch.Data(newUser)
 	if _, err := c.ksClient.IamV1alpha2().Users().
-		Patch(user.Name, patch.Type(), patchData); err != nil {
+		Patch(context.Background(), user.Name, patch.Type(), patchData, metav1.PatchOptions{}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Controller) multiClusterSync(groupBinding *iamv1alpha2.GroupBinding) error {
+
+	fedGroupBinding, err := c.federatedGroupBindingLister.Get(groupBinding.Name)
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return c.createFederatedGroupBinding(groupBinding)
+		}
+		klog.Error(err)
+		return err
+	}
+
+	if !reflect.DeepEqual(fedGroupBinding.Spec.Template.GroupRef, groupBinding.GroupRef) ||
+		!reflect.DeepEqual(fedGroupBinding.Spec.Template.Users, groupBinding.Users) ||
+		!reflect.DeepEqual(fedGroupBinding.Spec.Template.Labels, groupBinding.Labels) {
+
+		fedGroupBinding.Spec.Template.GroupRef = groupBinding.GroupRef
+		fedGroupBinding.Spec.Template.Users = groupBinding.Users
+		fedGroupBinding.Spec.Template.Labels = groupBinding.Labels
+
+		if _, err = c.ksClient.TypesV1beta1().FederatedGroupBindings().Update(context.Background(), fedGroupBinding, metav1.UpdateOptions{}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *Controller) createFederatedGroupBinding(groupBinding *iamv1alpha2.GroupBinding) error {
+	federatedGroup := &fedv1beta1types.FederatedGroupBinding{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       fedv1beta1types.FederatedGroupBindingKind,
+			APIVersion: fedv1beta1types.SchemeGroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: groupBinding.Name,
+		},
+		Spec: fedv1beta1types.FederatedGroupBindingSpec{
+			Template: fedv1beta1types.GroupBindingTemplate{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: groupBinding.Labels,
+				},
+				GroupRef: groupBinding.GroupRef,
+				Users:    groupBinding.Users,
+			},
+			Placement: fedv1beta1types.GenericPlacementFields{
+				ClusterSelector: &metav1.LabelSelector{},
+			},
+		},
+	}
+
+	// must bind groupBinding lifecycle
+	err := controllerutil.SetControllerReference(groupBinding, federatedGroup, scheme.Scheme)
+	if err != nil {
+		return err
+	}
+	if _, err = c.ksClient.TypesV1beta1().FederatedGroupBindings().Create(context.Background(), federatedGroup, metav1.CreateOptions{}); err != nil {
 		return err
 	}
 	return nil

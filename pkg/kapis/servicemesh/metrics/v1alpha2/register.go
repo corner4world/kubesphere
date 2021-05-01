@@ -17,11 +17,13 @@ limitations under the License.
 package v1alpha2
 
 import (
-	"github.com/emicklei/go-restful"
-	"github.com/emicklei/go-restful-openapi"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"kubesphere.io/kubesphere/pkg/apiserver/runtime"
 	"net/http"
+
+	"github.com/emicklei/go-restful"
+	restfulspec "github.com/emicklei/go-restful-openapi"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"kubesphere.io/kubesphere/pkg/apiserver/runtime"
 )
 
 const groupName = "servicemesh.kubesphere.io"
@@ -52,8 +54,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.QueryParameter("byLabels[]", "list of labels to use for grouping metrics(via Prometheus 'by' clause), e.g. source_workload, destination_service_name").DefaultValue("[]")).
 		Param(webservice.QueryParameter("requestProtocol", "request protocol for the telemetry, e.g. http/tcp/grpc").DefaultValue("all protocols")).
 		Param(webservice.QueryParameter("reporter", "istio telemetry reporter, 'source' or 'destination'").DefaultValue("source")).
-		Returns(http.StatusOK, "ok", metricsResponse{}).
-		Writes(metricsResponse{})).Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get app metrics
 	// Get /namespaces/{namespace}/apps/{app}/metrics
@@ -73,9 +74,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.QueryParameter("byLabels[]", "list of labels to use for grouping metrics(via Prometheus 'by' clause), e.g. source_workload, destination_service_name").DefaultValue("[]")).
 		Param(webservice.QueryParameter("requestProtocol", "request protocol for the telemetry, e.g. http/tcp/grpc").DefaultValue("all protocols")).
 		Param(webservice.QueryParameter("reporter", "istio telemetry reporter, 'source' or 'destination'").DefaultValue("source")).
-		Returns(http.StatusOK, "ok", metricsResponse{}).
-		Writes(metricsResponse{})).
-		Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get workload metrics
 	// Get /namespaces/{namespace}/workloads/{workload}/metrics
@@ -95,9 +94,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.QueryParameter("byLabels[]", "list of labels to use for grouping metrics(via Prometheus 'by' clause), e.g. source_workload, destination_service_name").DefaultValue("[]")).
 		Param(webservice.QueryParameter("requestProtocol", "request protocol for the telemetry, e.g. http/tcp/grpc").DefaultValue("all protocols")).
 		Param(webservice.QueryParameter("reporter", "istio telemetry reporter, 'source' or 'destination'").DefaultValue("source")).
-		Returns(http.StatusOK, "ok", metricsResponse{}).
-		Writes(metricsResponse{})).
-		Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get namespace metrics
 	// Get /namespaces/{namespace}/metrics
@@ -116,8 +113,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.QueryParameter("byLabels[]", "list of labels to use for grouping metrics(via Prometheus 'by' clause), e.g. source_workload, destination_service_name").DefaultValue("[]")).
 		Param(webservice.QueryParameter("requestProtocol", "request protocol for the telemetry, e.g. http/tcp/grpc").DefaultValue("all protocols")).
 		Param(webservice.QueryParameter("reporter", "istio telemetry reporter, 'source' or 'destination'").DefaultValue("source")).
-		Returns(http.StatusOK, "ok", metricsResponse{}).
-		Writes(metricsResponse{})).Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get namespace graph
 	// Get /namespaces/{namespace}/graph
@@ -133,24 +129,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.QueryParameter("injectServiceNodes", "flag for injecting the requested service node between source and destination nodes.").DefaultValue("false")).
 		Returns(http.StatusBadRequest, "bad request", BadRequestError{}).
 		Returns(http.StatusNotFound, "not found", NotFoundError{}).
-		Returns(http.StatusOK, "ok", graphResponse{}).
-		Writes(graphResponse{})).Produces(restful.MIME_JSON)
-
-	// Get namespaces graph, for multiple namespaces
-	// Get /namespaces/graph
-	webservice.Route(webservice.GET("/namespaces/graph").
-		To(getNamespacesGraph).
-		Metadata(restfulspec.KeyOpenAPITags, tags).
-		Doc("Get graph from all namespaces").
-		Param(webservice.QueryParameter("duration", "duration of the query period, in seconds").DefaultValue("10m")).
-		Param(webservice.QueryParameter("graphType", "type of the generated service graph. Available graph types: [app, service, versionedApp, workload].").DefaultValue("workload")).
-		Param(webservice.QueryParameter("groupBy", "app box grouping characteristic. Available groupings: [app, none, version].").DefaultValue("none")).
-		Param(webservice.QueryParameter("queryTime", "from which time point in UNIX timestamp, default now")).
-		Param(webservice.QueryParameter("injectServiceNodes", "flag for injecting the requested service node between source and destination nodes.").DefaultValue("false")).
-		Returns(http.StatusBadRequest, "bad request", BadRequestError{}).
-		Returns(http.StatusNotFound, "not found", NotFoundError{}).
-		Returns(http.StatusOK, "ok", graphResponse{}).
-		Writes(graphResponse{})).Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get namespace health
 	webservice.Route(webservice.GET("/namespaces/{namespace}/health").
@@ -162,8 +141,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.QueryParameter("queryTime", "the time to use for query")).
 		Returns(http.StatusBadRequest, "bad request", BadRequestError{}).
 		Returns(http.StatusNotFound, "not found", NotFoundError{}).
-		Returns(http.StatusOK, "ok", namespaceAppHealthResponse{}).
-		Writes(namespaceAppHealthResponse{})).Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get workloads health
 	webservice.Route(webservice.GET("/namespaces/{namespace}/workloads/{workload}/health").
@@ -174,8 +152,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.PathParameter("workload", "workload name").Required(true)).
 		Param(webservice.QueryParameter("rateInterval", "the rate interval used for fetching error rate").DefaultValue("10m").Required(true)).
 		Param(webservice.QueryParameter("queryTime", "the time to use for query")).
-		Returns(http.StatusOK, "ok", workloadHealthResponse{}).
-		Writes(workloadHealthResponse{})).Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get app health
 	webservice.Route(webservice.GET("/namespaces/{namespace}/apps/{app}/health").
@@ -186,8 +163,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.PathParameter("app", "app name").Required(true)).
 		Param(webservice.QueryParameter("rateInterval", "the rate interval used for fetching error rate").DefaultValue("10m").Required(true)).
 		Param(webservice.QueryParameter("queryTime", "the time to use for query")).
-		Returns(http.StatusOK, "ok", appHealthResponse{}).
-		Writes(appHealthResponse{})).Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get service health
 	webservice.Route(webservice.GET("/namespaces/{namespace}/services/{service}/health").
@@ -198,8 +174,7 @@ func AddToContainer(c *restful.Container) error {
 		Param(webservice.PathParameter("service", "service name").Required(true)).
 		Param(webservice.QueryParameter("rateInterval", "the rate interval used for fetching error rate").DefaultValue("10m").Required(true)).
 		Param(webservice.QueryParameter("queryTime", "the time to use for query")).
-		Returns(http.StatusOK, "ok", serviceHealthResponse{}).
-		Writes(serviceHealthResponse{})).Produces(restful.MIME_JSON)
+		Produces(restful.MIME_JSON))
 
 	// Get service tracing
 	webservice.Route(webservice.GET("/namespaces/{namespace}/services/{service}/traces").

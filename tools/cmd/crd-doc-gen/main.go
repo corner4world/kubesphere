@@ -19,20 +19,26 @@ package main
 import (
 	"flag"
 	"io/ioutil"
-	"k8s.io/apimachinery/pkg/api/meta"
-	urlruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clusterv1alpha1 "kubesphere.io/kubesphere/pkg/apis/cluster/v1alpha1"
-	devopsv1alpha3 "kubesphere.io/kubesphere/pkg/apis/devops/v1alpha3"
-	"kubesphere.io/kubesphere/tools/lib"
 	"log"
 	"os"
 	"path/filepath"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	urlruntime "k8s.io/apimachinery/pkg/util/runtime"
+
+	applicationv1alpha1 "kubesphere.io/kubesphere/pkg/apis/application/v1alpha1"
+	clusterv1alpha1 "kubesphere.io/kubesphere/pkg/apis/cluster/v1alpha1"
+	devopsv1alpha3 "kubesphere.io/kubesphere/pkg/apis/devops/v1alpha3"
+	"kubesphere.io/kubesphere/pkg/version"
+	"kubesphere.io/kubesphere/tools/lib"
 
 	"github.com/go-openapi/spec"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/kube-openapi/pkg/common"
+
+	applicationinstall "kubesphere.io/kubesphere/pkg/apis/application/crdinstall"
 	devopsinstall "kubesphere.io/kubesphere/pkg/apis/devops/crdinstall"
 	devopsv1alpha1 "kubesphere.io/kubesphere/pkg/apis/devops/v1alpha1"
 	networkinstall "kubesphere.io/kubesphere/pkg/apis/network/crdinstall"
@@ -60,6 +66,7 @@ func main() {
 	tenantinstall.Install(Scheme)
 	networkinstall.Install(Scheme)
 	devopsinstall.Install(Scheme)
+	applicationinstall.Install(Scheme)
 
 	urlruntime.Must(clusterv1alpha1.AddToScheme(Scheme))
 	urlruntime.Must(Scheme.SetVersionPriority(clusterv1alpha1.SchemeGroupVersion))
@@ -96,6 +103,10 @@ func main() {
 	mapper.AddSpecific(networkv1alpha1.SchemeGroupVersion.WithKind(networkv1alpha1.ResourceKindNamespaceNetworkPolicy),
 		networkv1alpha1.SchemeGroupVersion.WithResource(networkv1alpha1.ResourcePluralNamespaceNetworkPolicy),
 		networkv1alpha1.SchemeGroupVersion.WithResource(networkv1alpha1.ResourceSingularNamespaceNetworkPolicy), meta.RESTScopeRoot)
+	mapper.AddSpecific(networkv1alpha1.SchemeGroupVersion.WithKind(networkv1alpha1.ResourceKindIPPool),
+		networkv1alpha1.SchemeGroupVersion.WithResource(networkv1alpha1.ResourcePluralIPPool),
+		networkv1alpha1.SchemeGroupVersion.WithResource(networkv1alpha1.ResourceSingularIPPool), meta.RESTScopeRoot)
+
 	mapper.AddSpecific(devopsv1alpha3.SchemeGroupVersion.WithKind(devopsv1alpha3.ResourceKindDevOpsProject),
 		devopsv1alpha3.SchemeGroupVersion.WithResource(devopsv1alpha3.ResourcePluralDevOpsProject),
 		devopsv1alpha3.SchemeGroupVersion.WithResource(devopsv1alpha3.ResourceSingularDevOpsProject), meta.RESTScopeRoot)
@@ -111,20 +122,44 @@ func main() {
 		clusterv1alpha1.SchemeGroupVersion.WithResource(clusterv1alpha1.ResourcesPluralCluster),
 		clusterv1alpha1.SchemeGroupVersion.WithResource(clusterv1alpha1.ResourcesSingularCluster), meta.RESTScopeRoot)
 
+	mapper.AddSpecific(applicationv1alpha1.SchemeGroupVersion.WithKind(applicationv1alpha1.ResourceKindHelmApplication),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourcePluralHelmApplication),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourceSingularHelmApplication), meta.RESTScopeRoot)
+
+	mapper.AddSpecific(applicationv1alpha1.SchemeGroupVersion.WithKind(applicationv1alpha1.ResourceKindHelmApplicationVersion),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourcePluralHelmApplicationVersion),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourceSingularHelmApplicationVersion), meta.RESTScopeRoot)
+
+	mapper.AddSpecific(applicationv1alpha1.SchemeGroupVersion.WithKind(applicationv1alpha1.ResourceKindHelmRelease),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourcePluralHelmRelease),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourceSingularHelmRelease), meta.RESTScopeRoot)
+
+	mapper.AddSpecific(applicationv1alpha1.SchemeGroupVersion.WithKind(applicationv1alpha1.ResourceKindHelmRepo),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourcePluralHelmRepo),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourceSingularHelmRepo), meta.RESTScopeRoot)
+
+	mapper.AddSpecific(applicationv1alpha1.SchemeGroupVersion.WithKind(applicationv1alpha1.ResourceKindHelmCategory),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourcePluralHelmCategory),
+		applicationv1alpha1.SchemeGroupVersion.WithResource(applicationv1alpha1.ResourceSingularHelmCategory), meta.RESTScopeRoot)
+
 	spec, err := lib.RenderOpenAPISpec(lib.Config{
 		Scheme: Scheme,
 		Codecs: Codecs,
 		Info: spec.InfoProps{
-			Title:   "KubeSphere Advanced",
-			Version: "v2.0.0",
+			Title:   "KubeSphere",
+			Version: version.Get().GitVersion,
 			Contact: &spec.ContactInfo{
-				Name:  "KubeSphere",
-				URL:   "https://kubesphere.io/",
-				Email: "kubesphere@yunify.com",
+				ContactInfoProps: spec.ContactInfoProps{
+					Name:  "KubeSphere",
+					URL:   "https://kubesphere.io/",
+					Email: "kubesphere@yunify.com",
+				},
 			},
 			License: &spec.License{
-				Name: "Apache 2.0",
-				URL:  "https://www.apache.org/licenses/LICENSE-2.0.html",
+				LicenseProps: spec.LicenseProps{
+					Name: "Apache 2.0",
+					URL:  "https://www.apache.org/licenses/LICENSE-2.0.html",
+				},
 			},
 		},
 		OpenAPIDefinitions: []common.GetOpenAPIDefinitions{
@@ -147,6 +182,7 @@ func main() {
 			devopsv1alpha1.SchemeGroupVersion.WithResource(devopsv1alpha1.ResourcePluralS2iBuilderTemplate),
 			devopsv1alpha1.SchemeGroupVersion.WithResource(devopsv1alpha1.ResourcePluralS2iBuilder),
 			networkv1alpha1.SchemeGroupVersion.WithResource(networkv1alpha1.ResourcePluralNamespaceNetworkPolicy),
+			networkv1alpha1.SchemeGroupVersion.WithResource(networkv1alpha1.ResourcePluralIPPool),
 			devopsv1alpha3.SchemeGroupVersion.WithResource(devopsv1alpha3.ResourcePluralDevOpsProject),
 			devopsv1alpha3.SchemeGroupVersion.WithResource(devopsv1alpha3.ResourcePluralPipeline),
 			clusterv1alpha1.SchemeGroupVersion.WithResource(clusterv1alpha1.ResourcesPluralCluster),

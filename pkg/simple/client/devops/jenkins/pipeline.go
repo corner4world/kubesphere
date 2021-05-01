@@ -17,14 +17,19 @@ limitations under the License.
 package jenkins
 
 import (
+	"bytes"
 	"encoding/json"
-	"github.com/PuerkitoBio/goquery"
-	"k8s.io/klog"
-	"kubesphere.io/kubesphere/pkg/simple/client/devops"
+	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
+	"k8s.io/klog"
+
+	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 )
 
 type Pipeline struct {
@@ -73,8 +78,8 @@ const (
 	GithubWebhookUrl      = "/github-webhook/"
 	CheckScriptCompileUrl = "/job/%s/job/%s/descriptorByName/org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition/checkScriptCompile"
 
-	CheckPipelienCronUrl = "/job/%s/job/%s/descriptorByName/hudson.triggers.TimerTrigger/checkSpec?value=%s"
-	CheckCronUrl         = "/job/%s/descriptorByName/hudson.triggers.TimerTrigger/checkSpec?value=%s"
+	CheckPipelienCronUrl = "/job/%s/job/%s/descriptorByName/hudson.triggers.TimerTrigger/checkSpec?%s"
+	CheckCronUrl         = "/job/%s/descriptorByName/hudson.triggers.TimerTrigger/checkSpec?%s"
 	ToJenkinsfileUrl     = "/pipeline-model-converter/toJenkinsfile"
 	ToJsonUrl            = "/pipeline-model-converter/toJson"
 
@@ -98,9 +103,20 @@ func (p *Pipeline) GetPipeline() (*devops.Pipeline, error) {
 }
 
 func (p *Pipeline) ListPipelines() (*devops.PipelineList, error) {
-	res, err := p.Jenkins.SendPureRequest(p.Path, p.HttpParameters)
+	res, _, err := p.Jenkins.SendPureRequestWithHeaderResp(p.Path, p.HttpParameters)
 	if err != nil {
 		klog.Error(err)
+		if jErr, ok := err.(*JkError); ok {
+			switch jErr.Code {
+			case 404:
+				err = fmt.Errorf("please check if there're any Jenkins plugins issues exist")
+			default:
+				err = fmt.Errorf("please check if Jenkins is running well")
+			}
+			klog.Errorf("API '%s' request response code is '%d'", p.Path, jErr.Code)
+		} else {
+			err = fmt.Errorf("unknow errors happend when communicate with Jenkins")
+		}
 		return nil, err
 	}
 	count, err := p.searchPipelineCount()
@@ -109,17 +125,16 @@ func (p *Pipeline) ListPipelines() (*devops.PipelineList, error) {
 		return nil, err
 	}
 
-	pipelienList := devops.PipelineList{Total: count}
-	err = json.Unmarshal(res, &pipelienList.Items)
+	pipelienList, err := devops.UnmarshalPipeline(count, res)
 	if err != nil {
 		klog.Error(err)
 		return nil, err
 	}
-	return &pipelienList, err
+	return pipelienList, err
 }
 
 func (p *Pipeline) searchPipelineCount() (int, error) {
-	query, _ := parseJenkinsQuery(p.HttpParameters.Url.RawQuery)
+	query, _ := ParseJenkinsQuery(p.HttpParameters.Url.RawQuery)
 	query.Set("start", "0")
 	query.Set("limit", "1000")
 	query.Set("depth", "-1")
@@ -157,6 +172,14 @@ func (p *Pipeline) GetPipelineRun() (*devops.PipelineRun, error) {
 }
 
 func (p *Pipeline) ListPipelineRuns() (*devops.PipelineRunList, error) {
+	// prefer to use listPipelineRunsByRemotePaging once the corresponding issues from BlueOcean fixed
+	return p.listPipelineRunsByLocalPaging()
+}
+
+// listPipelineRunsByRemotePaging get the pipeline runs with pagination by remote (Jenkins BlueOcean plugin)
+// get the pagination information from the server side is better than the local side, but the API has some issues
+// see also https://github.com/kubesphere/kubesphere/issues/3507
+func (p *Pipeline) listPipelineRunsByRemotePaging() (*devops.PipelineRunList, error) {
 	res, err := p.Jenkins.SendPureRequest(p.Path, p.HttpParameters)
 	if err != nil {
 		klog.Error(err)
@@ -178,13 +201,65 @@ func (p *Pipeline) ListPipelineRuns() (*devops.PipelineRunList, error) {
 	return &pipelineRunList, err
 }
 
-func (p *Pipeline) searchPipelineRunsCount() (int, error) {
-	query, _ := parseJenkinsQuery(p.HttpParameters.Url.RawQuery)
-	query.Set("start", "0")
-	query.Set("limit", "1000")
-	query.Set("depth", "-1")
+// listPipelineRunsByLocalPaging should be a temporary solution
+// see also https://github.com/kubesphere/kubesphere/issues/3507
+func (p *Pipeline) listPipelineRunsByLocalPaging() (runList *devops.PipelineRunList, err error) {
+	desiredStart, desiredLimit := p.parsePaging()
+
+	var pageUrl *url.URL // get all Pipeline runs
+	if pageUrl, err = p.resetPaging(0, 10000); err != nil {
+		return
+	}
+	res, err := p.Jenkins.SendPureRequest(pageUrl.Path, p.HttpParameters)
+	if err != nil {
+		klog.Error(err)
+		return nil, err
+	}
+
+	runList = &devops.PipelineRunList{
+		Items: make([]devops.PipelineRun, 0),
+	}
+	if err = json.Unmarshal(res, &runList.Items); err != nil {
+		klog.Error(err)
+		return nil, err
+	}
+
+	// set the total count number
+	runList.Total = len(runList.Items)
+
+	// keep the desired data/
+	if desiredStart+1 >= runList.Total {
+		// beyond the boundary, return an empty
+		return
+	}
+
+	endIndex := runList.Total
+	if desiredStart+desiredLimit < endIndex {
+		endIndex = desiredStart + desiredLimit
+	}
+	runList.Items = runList.Items[desiredStart:endIndex]
+	return
+}
+
+// resetPaging reset the paging setting from request, support start, limit
+func (p *Pipeline) resetPaging(start, limit int) (path *url.URL, err error) {
+	query, _ := ParseJenkinsQuery(p.HttpParameters.Url.RawQuery)
+	query.Set("start", strconv.Itoa(start))
+	query.Set("limit", strconv.Itoa(limit))
 	p.HttpParameters.Url.RawQuery = query.Encode()
-	u, err := url.Parse(p.Path)
+	path, err = url.Parse(p.Path)
+	return
+}
+
+func (p *Pipeline) parsePaging() (start, limit int) {
+	query, _ := ParseJenkinsQuery(p.HttpParameters.Url.RawQuery)
+	start, _ = strconv.Atoi(query.Get("start"))
+	limit, _ = strconv.Atoi(query.Get("limit"))
+	return
+}
+
+func (p *Pipeline) searchPipelineRunsCount() (int, error) {
+	u, err := p.resetPaging(0, 1000)
 	if err != nil {
 		return 0, err
 	}
@@ -661,52 +736,80 @@ func (p *Pipeline) CheckScriptCompile() (*devops.CheckScript, error) {
 }
 
 func (p *Pipeline) CheckCron() (*devops.CheckCronRes, error) {
-
 	var res = new(devops.CheckCronRes)
-
-	Url, err := url.Parse(p.Jenkins.Server + p.Path)
 
 	reqJenkins := &http.Request{
 		Method: http.MethodGet,
-		URL:    Url,
 		Header: p.HttpParameters.Header,
+	}
+	if cronServiceURL, err := url.Parse(p.Jenkins.Server + p.Path); err != nil {
+		klog.Errorf(fmt.Sprintf("cannot parse Jenkins cronService URL, error: %#v", err))
+		return interanlErrorMessage(), err
+	} else {
+		reqJenkins.URL = cronServiceURL
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-
+	reqJenkins.SetBasicAuth(p.Jenkins.Requester.BasicAuth.Username, p.Jenkins.Requester.BasicAuth.Password)
 	resp, err := client.Do(reqJenkins)
-
-	if resp != nil && resp.StatusCode != http.StatusOK {
-		resBody, _ := getRespBody(resp)
-		return &devops.CheckCronRes{
-			Result:  "error",
-			Message: string(resBody),
-		}, err
-	}
 	if err != nil {
 		klog.Error(err)
-		return nil, err
+		return interanlErrorMessage(), err
 	}
-	defer resp.Body.Close()
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	var responseText string
+	if resp != nil {
+		if responseData, err := getRespBody(resp); err == nil {
+			responseText = string(responseData)
+		} else {
+			klog.Error(err)
+			return interanlErrorMessage(), fmt.Errorf("cannot get the response body from the Jenkins cron service request, %#v", err)
+		}
+
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+
+		statusCode := resp.StatusCode
+		if statusCode != http.StatusOK && statusCode != http.StatusBadRequest {
+			// the response body is meaningless for the users, but it's useful for a contributor
+			klog.Errorf("cron service from Jenkins is unavailable, error response: %v, status code: %d", responseText, statusCode)
+			return interanlErrorMessage(), err
+		}
+	}
+	klog.V(8).Infof("response text: %s", responseText)
+
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader([]byte(responseText)))
 	if err != nil {
 		klog.Error(err)
-		return nil, err
+		return interanlErrorMessage(), err
 	}
+	// it gives a message which located in <div>...</div> when the status code is 200
 	doc.Find("div").Each(func(i int, selection *goquery.Selection) {
 		res.Message = selection.Text()
 		res.Result, _ = selection.Attr("class")
+	})
+	// it gives a message which located in <pre>...</pre> when the status code is 400
+	doc.Find("pre").Each(func(i int, selection *goquery.Selection) {
+		res.Message = selection.Text()
+		res.Result = "error"
 	})
 	if res.Result == "ok" {
 		res.LastTime, res.NextTime, err = parseCronJobTime(res.Message)
 		if err != nil {
 			klog.Error(err)
-			return nil, err
+			return interanlErrorMessage(), err
 		}
 	}
 
 	return res, err
+}
+
+func interanlErrorMessage() *devops.CheckCronRes {
+	return &devops.CheckCronRes{
+		Result:  "error",
+		Message: "internal errors happened, get more details by checking ks-apiserver log output",
+	}
 }
 
 func parseCronJobTime(msg string) (string, string, error) {
@@ -755,19 +858,10 @@ func (p *Pipeline) ToJenkinsfile() (*devops.ResJenkinsfile, error) {
 	return &jenkinsfile, err
 }
 
-func (p *Pipeline) ToJson() (*devops.ResJson, error) {
-	res, err := p.Jenkins.SendPureRequest(p.Path, p.HttpParameters)
-	if err != nil {
-		klog.Error(err)
-		return nil, err
+func (p *Pipeline) ToJson() (result map[string]interface{}, err error) {
+	var data []byte
+	if data, err = p.Jenkins.SendPureRequest(p.Path, p.HttpParameters); err == nil {
+		err = json.Unmarshal(data, &result)
 	}
-
-	var toJson devops.ResJson
-	err = json.Unmarshal(res, &toJson)
-	if err != nil {
-		klog.Error(err)
-		return nil, err
-	}
-
-	return &toJson, err
+	return
 }

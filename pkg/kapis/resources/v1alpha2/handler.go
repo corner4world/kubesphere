@@ -18,11 +18,16 @@ package v1alpha2
 
 import (
 	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+
 	"github.com/emicklei/go-restful"
 	v1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
+
 	"kubesphere.io/kubesphere/pkg/api"
 	"kubesphere.io/kubesphere/pkg/informers"
 	"kubesphere.io/kubesphere/pkg/models/components"
@@ -37,9 +42,6 @@ import (
 	"kubesphere.io/kubesphere/pkg/models/routers"
 	"kubesphere.io/kubesphere/pkg/server/errors"
 	"kubesphere.io/kubesphere/pkg/server/params"
-	"net/http"
-	"strconv"
-	"strings"
 )
 
 type resourceHandler struct {
@@ -325,8 +327,9 @@ func (r *resourceHandler) handleGetRegistryEntry(request *restful.Request, respo
 	imageName := request.QueryParameter("image")
 	namespace := request.QueryParameter("namespace")
 	secretName := request.QueryParameter("secret")
+	insecure := request.QueryParameter("insecure") == "true"
 
-	detail, err := r.registryGetter.GetEntry(namespace, secretName, imageName)
+	detail, err := r.registryGetter.GetEntry(namespace, secretName, imageName, insecure)
 	if err != nil {
 		api.HandleBadRequest(response, nil, err)
 		return

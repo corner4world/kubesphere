@@ -19,8 +19,10 @@ package monitoring
 import (
 	"errors"
 	"fmt"
-	"github.com/json-iterator/go"
 	"strconv"
+	"time"
+
+	jsoniter "github.com/json-iterator/go"
 )
 
 const (
@@ -35,14 +37,16 @@ type Metadata struct {
 }
 
 type Metric struct {
-	MetricName string `json:"metric_name,omitempty" description:"metric name, eg. scheduler_up_sum"`
+	MetricName string `json:"metric_name,omitempty" description:"metric name, eg. scheduler_up_sum" csv:"metric_name"`
 	MetricData `json:"data,omitempty" description:"actual metric result"`
-	Error      string `json:"error,omitempty"`
+	Error      string `json:"error,omitempty" csv:"-"`
 }
 
+type MetricValues []MetricValue
+
 type MetricData struct {
-	MetricType   string        `json:"resultType,omitempty" description:"result type, one of matrix, vector"`
-	MetricValues []MetricValue `json:"result,omitempty" description:"metric data including labels, time series and values"`
+	MetricType   string `json:"resultType,omitempty" description:"result type, one of matrix, vector" csv:"metric_type"`
+	MetricValues `json:"result,omitempty" description:"metric data including labels, time series and values" csv:"metric_values"`
 }
 
 // The first element is the timestamp, the second is the metric value.
@@ -54,8 +58,34 @@ type MetricValue struct {
 	// The type of Point is a float64 array with fixed length of 2.
 	// So Point will always be initialized as [0, 0], rather than nil.
 	// To allow empty Sample, we should declare Sample to type *Point
-	Sample *Point  `json:"value,omitempty" description:"time series, values of vector type"`
-	Series []Point `json:"values,omitempty" description:"time series, values of matrix type"`
+	Sample         *Point        `json:"value,omitempty" description:"time series, values of vector type"`
+	Series         []Point       `json:"values,omitempty" description:"time series, values of matrix type"`
+	ExportSample   *ExportPoint  `json:"exported_value,omitempty" description:"exported time series, values of vector type"`
+	ExportedSeries []ExportPoint `json:"exported_values,omitempty" description:"exported time series, values of matrix type"`
+
+	MinValue     string `json:"min_value" description:"minimum value from monitor points"`
+	MaxValue     string `json:"max_value" description:"maximum value from monitor points"`
+	AvgValue     string `json:"avg_value" description:"average value from monitor points"`
+	SumValue     string `json:"sum_value" description:"sum value from monitor points"`
+	Fee          string `json:"fee" description:"resource fee"`
+	ResourceUnit string `json:"resource_unit"`
+	CurrencyUnit string `json:"currency_unit"`
+}
+
+func (mv *MetricValue) TransferToExportedMetricValue() {
+
+	if mv.Sample != nil {
+		sample := mv.Sample.transferToExported()
+		mv.ExportSample = &sample
+		mv.Sample = nil
+	}
+
+	for _, item := range mv.Series {
+		mv.ExportedSeries = append(mv.ExportedSeries, item.transferToExported())
+	}
+	mv.Series = nil
+
+	return
 }
 
 func (p Point) Timestamp() float64 {
@@ -64,6 +94,14 @@ func (p Point) Timestamp() float64 {
 
 func (p Point) Value() float64 {
 	return p[1]
+}
+
+func (p Point) transferToExported() ExportPoint {
+	return ExportPoint{p[0], p[1]}
+}
+
+func (p Point) Add(other Point) Point {
+	return Point{p[0], p[1] + other[1]}
 }
 
 // MarshalJSON implements json.Marshaler. It will be called when writing JSON to HTTP response
@@ -111,4 +149,36 @@ func (p *Point) UnmarshalJSON(b []byte) error {
 	p[0] = ts
 	p[1] = valf
 	return nil
+}
+
+type CSVPoint struct {
+	MetricName   string `csv:"metric_name"`
+	Selector     string `csv:"selector"`
+	Time         string `csv:"time"`
+	Value        string `csv:"value"`
+	ResourceUnit string `csv:"unit"`
+}
+
+type ExportPoint [2]float64
+
+func (p ExportPoint) Timestamp() string {
+	return time.Unix(int64(p[0]), 0).Format("2006-01-02 03:04:05 PM")
+}
+
+func (p ExportPoint) Value() float64 {
+	return p[1]
+}
+
+func (p ExportPoint) Format() string {
+	return p.Timestamp() + " " + strconv.FormatFloat(p.Value(), 'f', -1, 64)
+}
+
+func (p ExportPoint) TransformToCSVPoint(metricName string, selector string, resourceUnit string) CSVPoint {
+	return CSVPoint{
+		MetricName:   metricName,
+		Selector:     selector,
+		Time:         p.Timestamp(),
+		Value:        strconv.FormatFloat(p.Value(), 'f', -1, 64),
+		ResourceUnit: resourceUnit,
+	}
 }

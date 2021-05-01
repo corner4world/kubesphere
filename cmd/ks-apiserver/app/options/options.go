@@ -20,25 +20,33 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/klog"
+	runtimecache "sigs.k8s.io/controller-runtime/pkg/cache"
+
+	"kubesphere.io/kubesphere/pkg/apis"
 	"kubesphere.io/kubesphere/pkg/apiserver"
 	apiserverconfig "kubesphere.io/kubesphere/pkg/apiserver/config"
+	"kubesphere.io/kubesphere/pkg/client/clientset/versioned/scheme"
 	"kubesphere.io/kubesphere/pkg/informers"
 	genericoptions "kubesphere.io/kubesphere/pkg/server/options"
+	"kubesphere.io/kubesphere/pkg/simple/client/alerting"
 	auditingclient "kubesphere.io/kubesphere/pkg/simple/client/auditing/elasticsearch"
 	"kubesphere.io/kubesphere/pkg/simple/client/cache"
+
+	"net/http"
+	"strings"
+
 	"kubesphere.io/kubesphere/pkg/simple/client/devops/jenkins"
 	eventsclient "kubesphere.io/kubesphere/pkg/simple/client/events/elasticsearch"
 	"kubesphere.io/kubesphere/pkg/simple/client/k8s"
 	esclient "kubesphere.io/kubesphere/pkg/simple/client/logging/elasticsearch"
+	"kubesphere.io/kubesphere/pkg/simple/client/monitoring/metricsserver"
 	"kubesphere.io/kubesphere/pkg/simple/client/monitoring/prometheus"
-	"kubesphere.io/kubesphere/pkg/simple/client/openpitrix"
 	"kubesphere.io/kubesphere/pkg/simple/client/s3"
 	fakes3 "kubesphere.io/kubesphere/pkg/simple/client/s3/fake"
 	"kubesphere.io/kubesphere/pkg/simple/client/sonarqube"
-	"net/http"
-	"strings"
 )
 
 type ServerRunOptions struct {
@@ -78,6 +86,7 @@ func (s *ServerRunOptions) Flags() (fss cliflag.NamedFlagSets) {
 	s.MultiClusterOptions.AddFlags(fss.FlagSet("multicluster"), s.MultiClusterOptions)
 	s.EventsOptions.AddFlags(fss.FlagSet("events"), s.EventsOptions)
 	s.AuditingOptions.AddFlags(fss.FlagSet("auditing"), s.AuditingOptions)
+	s.AlertingOptions.AddFlags(fss.FlagSet("alerting"), s.AlertingOptions)
 
 	fs = fss.FlagSet("klog")
 	local := flag.NewFlagSet("klog", flag.ExitOnError)
@@ -105,7 +114,7 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 	apiServer.KubernetesClient = kubernetesClient
 
 	informerFactory := informers.NewInformerFactories(kubernetesClient.Kubernetes(), kubernetesClient.KubeSphere(),
-		kubernetesClient.Istio(), kubernetesClient.Application(), kubernetesClient.Snapshot(), kubernetesClient.ApiExtensions())
+		kubernetesClient.Istio(), kubernetesClient.Snapshot(), kubernetesClient.ApiExtensions(), kubernetesClient.Prometheus())
 	apiServer.InformerFactory = informerFactory
 
 	if s.MonitoringOptions == nil || len(s.MonitoringOptions.Endpoint) == 0 {
@@ -118,8 +127,10 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 		apiServer.MonitoringClient = monitoringClient
 	}
 
+	apiServer.MetricsClient = metricsserver.NewMetricsClient(kubernetesClient.Kubernetes(), s.KubernetesOptions)
+
 	if s.LoggingOptions.Host != "" {
-		loggingClient, err := esclient.NewElasticsearch(s.LoggingOptions)
+		loggingClient, err := esclient.NewClient(s.LoggingOptions)
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to elasticsearch, please check elasticsearch status, error: %v", err)
 		}
@@ -155,9 +166,7 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 	}
 
 	var cacheClient cache.Interface
-	if s.RedisOptions == nil || len(s.RedisOptions.Host) == 0 {
-		return nil, fmt.Errorf("redis service address MUST not be empty, please check configmap/kubesphere-config in kubesphere-system namespace")
-	} else {
+	if s.RedisOptions != nil && len(s.RedisOptions.Host) != 0 {
 		if s.RedisOptions.Host == fakeInterface && s.DebugMode {
 			apiServer.CacheClient = cache.NewSimpleCache()
 		} else {
@@ -167,6 +176,10 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 			}
 			apiServer.CacheClient = cacheClient
 		}
+	} else {
+		klog.Warning("ks-apiserver starts without redis provided, it will use in memory cache. " +
+			"This may cause inconsistencies when running ks-apiserver with multiple replicas.")
+		apiServer.CacheClient = cache.NewSimpleCache()
 	}
 
 	if s.EventsOptions.Host != "" {
@@ -185,12 +198,12 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 		apiServer.AuditingClient = auditingClient
 	}
 
-	if s.OpenPitrixOptions != nil && !s.OpenPitrixOptions.IsEmpty() {
-		opClient, err := openpitrix.NewClient(s.OpenPitrixOptions)
+	if s.AlertingOptions != nil && (s.AlertingOptions.PrometheusEndpoint != "" || s.AlertingOptions.ThanosRulerEndpoint != "") {
+		alertingClient, err := alerting.NewRuleClient(s.AlertingOptions)
 		if err != nil {
-			return nil, fmt.Errorf("failed to connect to openpitrix, please check openpitrix status, error: %v", err)
+			return nil, fmt.Errorf("failed to init alerting client: %v", err)
 		}
-		apiServer.OpenpitrixClient = opClient
+		apiServer.AlertingClient = alertingClient
 	}
 
 	server := &http.Server{
@@ -203,6 +216,16 @@ func (s *ServerRunOptions) NewAPIServer(stopCh <-chan struct{}) (*apiserver.APIS
 			return nil, err
 		}
 		server.TLSConfig.Certificates = []tls.Certificate{certificate}
+	}
+
+	sch := scheme.Scheme
+	if err := apis.AddToScheme(sch); err != nil {
+		klog.Fatalf("unable add APIs to scheme: %v", err)
+	}
+
+	apiServer.RuntimeCache, err = runtimecache.New(apiServer.KubernetesClient.Config(), runtimecache.Options{Scheme: sch})
+	if err != nil {
+		klog.Fatalf("unable to create runtime cache: %v", err)
 	}
 
 	apiServer.Server = server

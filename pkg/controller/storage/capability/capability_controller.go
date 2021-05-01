@@ -19,19 +19,21 @@
 package capability
 
 import (
+	"context"
 	"fmt"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/version"
-	"k8s.io/client-go/discovery"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
-	snapshotv1beta1 "github.com/kubernetes-csi/external-snapshotter/v2/pkg/apis/volumesnapshot/v1beta1"
-	snapshotclient "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/clientset/versioned/typed/volumesnapshot/v1beta1"
-	snapinformers "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/informers/externalversions/volumesnapshot/v1beta1"
-	snapshotlisters "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/listers/volumesnapshot/v1beta1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/version"
+	"k8s.io/client-go/discovery"
+
+	snapshotv1beta1 "github.com/kubernetes-csi/external-snapshotter/client/v3/apis/volumesnapshot/v1beta1"
+	snapshotclient "github.com/kubernetes-csi/external-snapshotter/client/v3/clientset/versioned/typed/volumesnapshot/v1beta1"
+	snapinformers "github.com/kubernetes-csi/external-snapshotter/client/v3/informers/externalversions/volumesnapshot/v1beta1"
+	snapshotlisters "github.com/kubernetes-csi/external-snapshotter/client/v3/listers/volumesnapshot/v1beta1"
 	storagev1 "k8s.io/api/storage/v1"
 	storagev1beta1 "k8s.io/api/storage/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -47,6 +49,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
+
 	capability "kubesphere.io/kubesphere/pkg/apis/storage/v1alpha1"
 	crdscheme "kubesphere.io/kubesphere/pkg/client/clientset/versioned/scheme"
 	capabilityclient "kubesphere.io/kubesphere/pkg/client/clientset/versioned/typed/storage/v1alpha1"
@@ -298,7 +301,7 @@ func (c *StorageCapabilityController) syncHandler(key string) error {
 					Driver:         storageClass.Provisioner,
 					DeletionPolicy: snapshotv1beta1.VolumeSnapshotContentDelete,
 				}
-				_, err = c.snapshotClassClient.Create(volumeSnapshotClassCreate)
+				_, err = c.snapshotClassClient.Create(context.Background(), volumeSnapshotClassCreate, metav1.CreateOptions{})
 				if err != nil {
 					return err
 				}
@@ -319,7 +322,7 @@ func (c *StorageCapabilityController) syncHandler(key string) error {
 			storageClassCapabilityCreate := &capability.StorageClassCapability{ObjectMeta: metav1.ObjectMeta{Name: storageClass.Name}}
 			storageClassCapabilityCreate.Spec = *capabilitySpec
 			klog.Info("Create StorageClassCapability: ", storageClassCapabilityCreate)
-			_, err = c.storageClassCapabilityClient.Create(storageClassCapabilityCreate)
+			_, err = c.storageClassCapabilityClient.Create(context.Background(), storageClassCapabilityCreate, metav1.CreateOptions{})
 			return err
 		}
 		return err
@@ -329,7 +332,7 @@ func (c *StorageCapabilityController) syncHandler(key string) error {
 	storageClassCapabilityUpdate.Spec = *capabilitySpec
 	if !reflect.DeepEqual(storageClassCapabilityExist, storageClassCapabilityUpdate) {
 		klog.Info("Update StorageClassCapability: ", storageClassCapabilityUpdate)
-		_, err = c.storageClassCapabilityClient.Update(storageClassCapabilityUpdate)
+		_, err = c.storageClassCapabilityClient.Update(context.Background(), storageClassCapabilityUpdate, metav1.UpdateOptions{})
 		return err
 	}
 	return nil
@@ -343,7 +346,7 @@ func (c *StorageCapabilityController) updateStorageClassSnapshotSupported(storag
 	// err != nil means annotationSupportSnapshot is not illegal, include empty
 	if err != nil || snapshotSupported != snapshotSupportedAnnotated {
 		storageClass.Annotations[annotationSupportSnapshot] = strconv.FormatBool(snapshotSupported)
-		_, err = c.storageClassClient.Update(storageClass)
+		_, err = c.storageClassClient.Update(context.Background(), storageClass, metav1.UpdateOptions{})
 		if err != nil {
 			return err
 		}
@@ -360,7 +363,7 @@ func (c *StorageCapabilityController) deleteStorageCapability(name string) error
 		return err
 	}
 	klog.Infof("Delete StorageClassCapability %s", name)
-	return c.storageClassCapabilityClient.Delete(name, &metav1.DeleteOptions{})
+	return c.storageClassCapabilityClient.Delete(context.Background(), name, metav1.DeleteOptions{})
 }
 
 func (c *StorageCapabilityController) deleteSnapshotClass(name string) error {
@@ -375,7 +378,7 @@ func (c *StorageCapabilityController) deleteSnapshotClass(name string) error {
 		return err
 	}
 	klog.Infof("Delete SnapshotClass %s", name)
-	return c.snapshotClassClient.Delete(name, &metav1.DeleteOptions{})
+	return c.snapshotClassClient.Delete(context.Background(), name, metav1.DeleteOptions{})
 }
 
 func (c *StorageCapabilityController) capabilityFromProvisioner(provisioner string) (*capability.StorageClassCapabilitySpec, error) {

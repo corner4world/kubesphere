@@ -17,10 +17,12 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"github.com/emicklei/go-restful"
-	"kubesphere.io/kubesphere/pkg/simple/client/auditing"
 	"strconv"
 	"time"
+
+	"github.com/emicklei/go-restful"
+
+	"kubesphere.io/kubesphere/pkg/simple/client/auditing"
 )
 
 type APIResponse struct {
@@ -48,8 +50,8 @@ type Query struct {
 	ResponseCodeFilter         string `json:"response_code_filter,omitempty"`
 	ResponseStatusFilter       string `json:"response_status_filter,omitempty"`
 
-	StartTime *time.Time `json:"start_time,omitempty"`
-	EndTime   *time.Time `json:"end_time,omitempty"`
+	StartTime time.Time `json:"start_time,omitempty"`
+	EndTime   time.Time `json:"end_time,omitempty"`
 
 	Interval string `json:"interval,omitempty"`
 	Sort     string `json:"sort,omitempty"`
@@ -84,7 +86,7 @@ func ParseQueryParameter(req *restful.Request) (*Query, error) {
 			return nil, err
 		}
 		t := time.Unix(sec, 0)
-		q.StartTime = &t
+		q.StartTime = t
 	}
 	if tstr := req.QueryParameter("end_time"); tstr != "" {
 		sec, err := strconv.ParseInt(tstr, 10, 64)
@@ -92,7 +94,7 @@ func ParseQueryParameter(req *restful.Request) (*Query, error) {
 			return nil, err
 		}
 		t := time.Unix(sec, 0)
-		q.EndTime = &t
+		q.EndTime = t
 	}
 	if q.Interval = req.QueryParameter("interval"); q.Interval == "" {
 		q.Interval = "15m"

@@ -17,23 +17,21 @@ import (
 	"math"
 	"sort"
 
-	"github.com/prometheus/common/model"
-
-	"github.com/prometheus/prometheus/storage/metric"
+	"github.com/prometheus/prometheus/pkg/labels"
 )
 
 // Helpers to calculate quantiles.
 
 // excludedLabels are the labels to exclude from signature calculation for
 // quantiles.
-var excludedLabels = map[model.LabelName]struct{}{
-	model.MetricNameLabel: {},
-	model.BucketLabel:     {},
+var excludedLabels = []string{
+	labels.MetricName,
+	labels.BucketLabel,
 }
 
 type bucket struct {
 	upperBound float64
-	count      model.SampleValue
+	count      float64
 }
 
 // buckets implements sort.Interface.
@@ -44,7 +42,7 @@ func (b buckets) Swap(i, j int)      { b[i], b[j] = b[j], b[i] }
 func (b buckets) Less(i, j int) bool { return b[i].upperBound < b[j].upperBound }
 
 type metricWithBuckets struct {
-	metric  metric.Metric
+	metric  labels.Labels
 	buckets buckets
 }
 
@@ -70,22 +68,24 @@ type metricWithBuckets struct {
 // If q<0, -Inf is returned.
 //
 // If q>1, +Inf is returned.
-func bucketQuantile(q model.SampleValue, buckets buckets) float64 {
+func bucketQuantile(q float64, buckets buckets) float64 {
 	if q < 0 {
 		return math.Inf(-1)
 	}
 	if q > 1 {
 		return math.Inf(+1)
 	}
-	if len(buckets) < 2 {
-		return math.NaN()
-	}
 	sort.Sort(buckets)
 	if !math.IsInf(buckets[len(buckets)-1].upperBound, +1) {
 		return math.NaN()
 	}
 
+	buckets = coalesceBuckets(buckets)
 	ensureMonotonic(buckets)
+
+	if len(buckets) < 2 {
+		return math.NaN()
+	}
 
 	rank := q * buckets[len(buckets)-1].count
 	b := sort.Search(len(buckets)-1, func(i int) bool { return buckets[i].count >= rank })
@@ -106,7 +106,26 @@ func bucketQuantile(q model.SampleValue, buckets buckets) float64 {
 		count -= buckets[b-1].count
 		rank -= buckets[b-1].count
 	}
-	return bucketStart + (bucketEnd-bucketStart)*float64(rank/count)
+	return bucketStart + (bucketEnd-bucketStart)*(rank/count)
+}
+
+// coalesceBuckets merges buckets with the same upper bound.
+//
+// The input buckets must be sorted.
+func coalesceBuckets(buckets buckets) buckets {
+	last := buckets[0]
+	i := 0
+	for _, b := range buckets[1:] {
+		if b.upperBound == last.upperBound {
+			last.count += b.count
+		} else {
+			buckets[i] = last
+			last = b
+			i++
+		}
+	}
+	buckets[i] = last
+	return buckets[:i+1]
 }
 
 // The assumption that bucket counts increase monotonically with increasing
@@ -154,9 +173,9 @@ func ensureMonotonic(buckets buckets) {
 	}
 }
 
-// qauntile calculates the given quantile of a vector of samples.
+// quantile calculates the given quantile of a vector of samples.
 //
-// The vector will be sorted.
+// The Vector will be sorted.
 // If 'values' has zero elements, NaN is returned.
 // If q<0, -Inf is returned.
 // If q>1, +Inf is returned.
@@ -181,5 +200,5 @@ func quantile(q float64, values vectorByValueHeap) float64 {
 	upperIndex := math.Min(n-1, lowerIndex+1)
 
 	weight := rank - math.Floor(rank)
-	return float64(values[int(lowerIndex)].Value)*(1-weight) + float64(values[int(upperIndex)].Value)*weight
+	return values[int(lowerIndex)].V*(1-weight) + values[int(upperIndex)].V*weight
 }

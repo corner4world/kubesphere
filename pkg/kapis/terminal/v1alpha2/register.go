@@ -18,10 +18,11 @@ package v1alpha2
 
 import (
 	"github.com/emicklei/go-restful"
-	"github.com/emicklei/go-restful-openapi"
+	restfulspec "github.com/emicklei/go-restful-openapi"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
 	"kubesphere.io/kubesphere/pkg/apiserver/runtime"
 	"kubesphere.io/kubesphere/pkg/constants"
 	"kubesphere.io/kubesphere/pkg/models"
@@ -39,7 +40,7 @@ func AddToContainer(c *restful.Container, client kubernetes.Interface, config *r
 
 	handler := newTerminalHandler(client, config)
 
-	webservice.Route(webservice.GET("/namespaces/{namespace}/pods/{pod}").
+	webservice.Route(webservice.GET("/namespaces/{namespace}/pods/{pod}/exec").
 		To(handler.handleTerminalSession).
 		Param(webservice.PathParameter("namespace", "namespace of which the pod located in")).
 		Param(webservice.PathParameter("pod", "name of the pod")).

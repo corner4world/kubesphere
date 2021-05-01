@@ -18,14 +18,16 @@ package fake
 
 import (
 	"fmt"
-	"github.com/emicklei/go-restful"
 	"io/ioutil"
-	v1 "k8s.io/api/core/v1"
-	devopsv1alpha3 "kubesphere.io/kubesphere/pkg/apis/devops/v1alpha3"
-	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/emicklei/go-restful"
+	v1 "k8s.io/api/core/v1"
+
+	devopsv1alpha3 "kubesphere.io/kubesphere/pkg/apis/devops/v1alpha3"
+	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 )
 
 type Devops struct {
@@ -297,7 +299,7 @@ func (d *Devops) CheckCron(projectName string, httpParameters *devops.HttpParame
 func (d *Devops) ToJenkinsfile(httpParameters *devops.HttpParameters) (*devops.ResJenkinsfile, error) {
 	return nil, nil
 }
-func (d *Devops) ToJson(httpParameters *devops.HttpParameters) (*devops.ResJson, error) {
+func (d *Devops) ToJson(httpParameters *devops.HttpParameters) (map[string]interface{}, error) {
 	return nil, nil
 }
 

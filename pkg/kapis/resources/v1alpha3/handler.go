@@ -17,30 +17,31 @@ limitations under the License.
 package v1alpha3
 
 import (
+	"strings"
+
 	"github.com/emicklei/go-restful"
 	"k8s.io/klog"
+
 	"kubesphere.io/kubesphere/pkg/api"
 	"kubesphere.io/kubesphere/pkg/apiserver/query"
-	"kubesphere.io/kubesphere/pkg/informers"
 	"kubesphere.io/kubesphere/pkg/models/components"
 	"kubesphere.io/kubesphere/pkg/models/resources/v1alpha2"
 	resourcev1alpha2 "kubesphere.io/kubesphere/pkg/models/resources/v1alpha2/resource"
-	"kubesphere.io/kubesphere/pkg/models/resources/v1alpha3/resource"
+	resourcev1alpha3 "kubesphere.io/kubesphere/pkg/models/resources/v1alpha3/resource"
 	"kubesphere.io/kubesphere/pkg/server/params"
-	"strings"
 )
 
 type Handler struct {
-	resourceGetterV1alpha3  *resource.ResourceGetter
+	resourceGetterV1alpha3  *resourcev1alpha3.ResourceGetter
 	resourcesGetterV1alpha2 *resourcev1alpha2.ResourceGetter
 	componentsGetter        components.ComponentsGetter
 }
 
-func New(factory informers.InformerFactory) *Handler {
+func New(resourceGetterV1alpha3 *resourcev1alpha3.ResourceGetter, resourcesGetterV1alpha2 *resourcev1alpha2.ResourceGetter, componentsGetter components.ComponentsGetter) *Handler {
 	return &Handler{
-		resourceGetterV1alpha3:  resource.NewResourceGetter(factory),
-		resourcesGetterV1alpha2: resourcev1alpha2.NewResourceGetter(factory),
-		componentsGetter:        components.NewComponentsGetter(factory.KubernetesSharedInformerFactory()),
+		resourceGetterV1alpha3:  resourceGetterV1alpha3,
+		resourcesGetterV1alpha2: resourcesGetterV1alpha2,
+		componentsGetter:        componentsGetter,
 	}
 }
 
@@ -49,13 +50,14 @@ func (h *Handler) handleGetResources(request *restful.Request, response *restful
 	resourceType := request.PathParameter("resources")
 	name := request.PathParameter("name")
 
+	// use informers to retrieve resources
 	result, err := h.resourceGetterV1alpha3.Get(resourceType, namespace, name)
 	if err == nil {
 		response.WriteEntity(result)
 		return
 	}
 
-	if err != resource.ErrResourceNotSupported {
+	if err != resourcev1alpha3.ErrResourceNotSupported {
 		klog.Error(err, resourceType)
 		api.HandleInternalError(response, nil, err)
 		return
@@ -63,10 +65,13 @@ func (h *Handler) handleGetResources(request *restful.Request, response *restful
 
 	// fallback to v1alpha2
 	resultV1alpha2, err := h.resourcesGetterV1alpha2.GetResource(namespace, resourceType, name)
-
 	if err != nil {
+		if err == resourcev1alpha2.ErrResourceNotSupported {
+			api.HandleNotFound(response, request, err)
+			return
+		}
 		klog.Error(err)
-		api.HandleInternalError(response, nil, err)
+		api.HandleError(response, request, err)
 		return
 	}
 
@@ -81,27 +86,28 @@ func (h *Handler) handleListResources(request *restful.Request, response *restfu
 	namespace := request.PathParameter("namespace")
 
 	result, err := h.resourceGetterV1alpha3.List(resourceType, namespace, query)
-
 	if err == nil {
 		response.WriteEntity(result)
 		return
 	}
 
-	if err != resource.ErrResourceNotSupported {
+	if err != resourcev1alpha3.ErrResourceNotSupported {
 		klog.Error(err, resourceType)
-		api.HandleInternalError(response, nil, err)
+		api.HandleInternalError(response, request, err)
 		return
 	}
 
 	// fallback to v1alpha2
 	result, err = h.fallback(resourceType, namespace, query)
-
 	if err != nil {
+		if err == resourcev1alpha2.ErrResourceNotSupported {
+			api.HandleNotFound(response, request, err)
+			return
+		}
 		klog.Error(err)
-		api.HandleInternalError(response, nil, err)
+		api.HandleError(response, request, err)
 		return
 	}
-
 	response.WriteEntity(result)
 }
 
@@ -153,7 +159,6 @@ func (h *Handler) fallback(resourceType string, namespace string, q *query.Query
 	}
 
 	result, err := h.resourcesGetterV1alpha2.ListResources(namespace, resourceType, conditions, orderBy, reverse, limit, offset)
-
 	if err != nil {
 		klog.Error(err)
 		return nil, err
@@ -168,19 +173,16 @@ func (h *Handler) fallback(resourceType string, namespace string, q *query.Query
 func (h *Handler) handleGetComponentStatus(request *restful.Request, response *restful.Response) {
 	component := request.PathParameter("component")
 	result, err := h.componentsGetter.GetComponentStatus(component)
-
 	if err != nil {
 		klog.Error(err)
 		api.HandleInternalError(response, nil, err)
 		return
 	}
-
 	response.WriteEntity(result)
 }
 
 func (h *Handler) handleGetSystemHealthStatus(request *restful.Request, response *restful.Response) {
 	result, err := h.componentsGetter.GetSystemHealthStatus()
-
 	if err != nil {
 		klog.Error(err)
 		api.HandleInternalError(response, nil, err)
@@ -192,9 +194,7 @@ func (h *Handler) handleGetSystemHealthStatus(request *restful.Request, response
 
 // get all componentsHandler
 func (h *Handler) handleGetComponents(request *restful.Request, response *restful.Response) {
-
 	result, err := h.componentsGetter.GetAllComponentsStatus()
-
 	if err != nil {
 		klog.Error(err)
 		api.HandleInternalError(response, nil, err)

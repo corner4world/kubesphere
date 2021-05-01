@@ -22,24 +22,30 @@ import (
 	"errors"
 	"io/ioutil"
 
+	"github.com/mitchellh/mapstructure"
+
 	"golang.org/x/oauth2"
-	"gopkg.in/yaml.v3"
+
 	"kubesphere.io/kubesphere/pkg/apiserver/authentication/identityprovider"
 	"kubesphere.io/kubesphere/pkg/apiserver/authentication/oauth"
 )
 
-type AliyunIDaaS struct {
+func init() {
+	identityprovider.RegisterOAuthProvider(&idaasProviderFactory{})
+}
+
+type aliyunIDaaS struct {
 	// ClientID is the application's ID.
 	ClientID string `json:"clientID" yaml:"clientID"`
 
 	// ClientSecret is the application's secret.
-	ClientSecret string `json:"-" yaml:"clientSecret"`
+	ClientSecret string `json:"clientSecret" yaml:"clientSecret"`
 
 	// Endpoint contains the resource server's token endpoint
 	// URLs. These are constants specific to each server and are
 	// often available via site-specific packages, such as
 	// google.Endpoint or github.Endpoint.
-	Endpoint Endpoint `json:"endpoint" yaml:"endpoint"`
+	Endpoint endpoint `json:"endpoint" yaml:"endpoint"`
 
 	// RedirectURL is the URL to redirect users going through
 	// the OAuth flow, after the resource owner's URLs.
@@ -47,17 +53,19 @@ type AliyunIDaaS struct {
 
 	// Scope specifies optional requested permissions.
 	Scopes []string `json:"scopes" yaml:"scopes"`
+
+	Config *oauth2.Config `json:"-" yaml:"-"`
 }
 
-// Endpoint represents an OAuth 2.0 provider's authorization and token
+// endpoint represents an OAuth 2.0 provider's authorization and token
 // endpoint URLs.
-type Endpoint struct {
+type endpoint struct {
 	AuthURL     string `json:"authURL" yaml:"authURL"`
 	TokenURL    string `json:"tokenURL" yaml:"tokenURL"`
-	UserInfoURL string `json:"user_info_url" yaml:"userInfoUrl"`
+	UserInfoURL string `json:"userInfoURL" yaml:"userInfoURL"`
 }
 
-type IDaaSIdentity struct {
+type idaasIdentity struct {
 	Sub         string `json:"sub"`
 	OuID        string `json:"ou_id"`
 	Nickname    string `json:"nickname"`
@@ -67,72 +75,69 @@ type IDaaSIdentity struct {
 	Username    string `json:"username"`
 }
 
-type UserInfoResp struct {
+type userInfoResp struct {
 	Success       bool          `json:"success"`
 	Message       string        `json:"message"`
 	Code          string        `json:"code"`
-	IDaaSIdentity IDaaSIdentity `json:"data"`
+	IDaaSIdentity idaasIdentity `json:"data"`
 }
 
-func init() {
-	identityprovider.RegisterOAuthProvider(&AliyunIDaaS{})
+type idaasProviderFactory struct {
 }
 
-func (a *AliyunIDaaS) Type() string {
-	return "AliyunIDaasProvider"
+func (f *idaasProviderFactory) Type() string {
+	return "AliyunIDaaSProvider"
 }
 
-func (a *AliyunIDaaS) Setup(options *oauth.DynamicOptions) (identityprovider.OAuthProvider, error) {
-	data, err := yaml.Marshal(options)
-	if err != nil {
+func (f *idaasProviderFactory) Create(options oauth.DynamicOptions) (identityprovider.OAuthProvider, error) {
+	var idaas aliyunIDaaS
+	if err := mapstructure.Decode(options, &idaas); err != nil {
 		return nil, err
 	}
-	var provider AliyunIDaaS
-	err = yaml.Unmarshal(data, &provider)
-	if err != nil {
-		return nil, err
+	idaas.Config = &oauth2.Config{
+		ClientID:     idaas.ClientID,
+		ClientSecret: idaas.ClientSecret,
+		Endpoint: oauth2.Endpoint{
+			AuthURL:   idaas.Endpoint.AuthURL,
+			TokenURL:  idaas.Endpoint.TokenURL,
+			AuthStyle: oauth2.AuthStyleAutoDetect,
+		},
+		RedirectURL: idaas.RedirectURL,
+		Scopes:      idaas.Scopes,
 	}
-	return &provider, nil
+	return &idaas, nil
 }
 
-func (a IDaaSIdentity) GetName() string {
+func (a idaasIdentity) GetUserID() string {
+	return a.Sub
+}
+
+func (a idaasIdentity) GetUsername() string {
 	return a.Username
 }
 
-func (a IDaaSIdentity) GetEmail() string {
+func (a idaasIdentity) GetEmail() string {
 	return a.Email
 }
 
-func (g *AliyunIDaaS) IdentityExchange(code string) (identityprovider.Identity, error) {
-	config := oauth2.Config{
-		ClientID:     g.ClientID,
-		ClientSecret: g.ClientSecret,
-		Endpoint: oauth2.Endpoint{
-			AuthURL:   g.Endpoint.AuthURL,
-			TokenURL:  g.Endpoint.TokenURL,
-			AuthStyle: oauth2.AuthStyleAutoDetect,
-		},
-		RedirectURL: g.RedirectURL,
-		Scopes:      g.Scopes,
-	}
-	token, err := config.Exchange(context.Background(), code)
+func (a *aliyunIDaaS) IdentityExchange(code string) (identityprovider.Identity, error) {
+	token, err := a.Config.Exchange(context.TODO(), code)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := oauth2.NewClient(context.Background(), oauth2.StaticTokenSource(token)).Get(g.Endpoint.UserInfoURL)
+	resp, err := oauth2.NewClient(context.TODO(), oauth2.StaticTokenSource(token)).Get(a.Endpoint.UserInfoURL)
 	if err != nil {
 		return nil, err
 	}
 
 	data, err := ioutil.ReadAll(resp.Body)
-
-	defer resp.Body.Close()
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 
-	var UserInfoResp UserInfoResp
+	var UserInfoResp userInfoResp
 	err = json.Unmarshal(data, &UserInfoResp)
 	if err != nil {
 		return nil, err

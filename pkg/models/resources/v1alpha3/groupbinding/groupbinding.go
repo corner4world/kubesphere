@@ -18,12 +18,16 @@ package groupbinding
 
 import (
 	"k8s.io/apimachinery/pkg/runtime"
+
 	"kubesphere.io/kubesphere/pkg/api"
 	"kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 	"kubesphere.io/kubesphere/pkg/apiserver/query"
 	informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions"
 	"kubesphere.io/kubesphere/pkg/models/resources/v1alpha3"
+	"kubesphere.io/kubesphere/pkg/utils/sliceutil"
 )
+
+const User = "user"
 
 type groupBindingGetter struct {
 	sharedInformers informers.SharedInformerFactory
@@ -74,5 +78,10 @@ func (d *groupBindingGetter) filter(object runtime.Object, filter query.Filter) 
 		return false
 	}
 
-	return v1alpha3.DefaultObjectMetaFilter(groupbinding.ObjectMeta, filter)
+	switch filter.Field {
+	case User:
+		return sliceutil.HasString(groupbinding.Users, string(filter.Value))
+	default:
+		return v1alpha3.DefaultObjectMetaFilter(groupbinding.ObjectMeta, filter)
+	}
 }

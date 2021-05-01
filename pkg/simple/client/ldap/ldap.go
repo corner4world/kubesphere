@@ -18,17 +18,19 @@ package ldap
 
 import (
 	"fmt"
-	"github.com/go-ldap/ldap"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog"
-	"kubesphere.io/kubesphere/pkg/api"
-	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
-	"kubesphere.io/kubesphere/pkg/apiserver/query"
-	"kubesphere.io/kubesphere/pkg/server/errors"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-ldap/ldap"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog"
+
+	"kubesphere.io/kubesphere/pkg/api"
+	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
+	"kubesphere.io/kubesphere/pkg/apiserver/query"
+	"kubesphere.io/kubesphere/pkg/server/errors"
 )
 
 const (
@@ -169,8 +171,6 @@ func (l *ldapInterfaceImpl) newConn() (ldap.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-
 	err = conn.Bind(l.managerDN, l.managerPassword)
 	if err != nil {
 		return nil, err

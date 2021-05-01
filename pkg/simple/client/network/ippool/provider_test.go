@@ -17,24 +17,26 @@ limitations under the License.
 package ippool
 
 import (
+	"context"
 	"testing"
 
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"kubesphere.io/kubesphere/pkg/apis/network/v1alpha1"
 	fakeks "kubesphere.io/kubesphere/pkg/client/clientset/versioned/fake"
 	"kubesphere.io/kubesphere/pkg/simple/client/network/ippool/ipam"
 )
 
 func testNewProvider() provider {
-	return NewProvider(fakeks.NewSimpleClientset(), Options{})
+	return newProvider(fakeks.NewSimpleClientset())
 }
 
 func TestProvider_GetIPPoolStats(t *testing.T) {
 	p := testNewProvider()
 
 	pool := v1alpha1.IPPool{
-		TypeMeta: v1.TypeMeta{},
-		ObjectMeta: v1.ObjectMeta{
+		TypeMeta: metav1.TypeMeta{},
+		ObjectMeta: metav1.ObjectMeta{
 			Name: "testippool",
 			Labels: map[string]string{
 				v1alpha1.IPPoolTypeLabel: v1alpha1.VLAN,
@@ -47,7 +49,7 @@ func TestProvider_GetIPPoolStats(t *testing.T) {
 		Status: v1alpha1.IPPoolStatus{},
 	}
 
-	_, err := p.kubesphereClient.NetworkV1alpha1().IPPools().Create(&pool)
+	_, err := p.kubesphereClient.NetworkV1alpha1().IPPools().Create(context.Background(), &pool, metav1.CreateOptions{})
 	if err != nil {
 		t.FailNow()
 	}

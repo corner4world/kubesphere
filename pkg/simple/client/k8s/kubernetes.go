@@ -17,26 +17,28 @@ limitations under the License.
 package k8s
 
 import (
-	snapshotclient "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/clientset/versioned"
+	"strings"
+
+	snapshotclient "github.com/kubernetes-csi/external-snapshotter/client/v3/clientset/versioned"
+	promresourcesclient "github.com/prometheus-operator/prometheus-operator/pkg/client/versioned"
 	istioclient "istio.io/client-go/pkg/clientset/versioned"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
-	applicationclientset "sigs.k8s.io/application/pkg/client/clientset/versioned"
-	"strings"
 )
 
 type Client interface {
 	Kubernetes() kubernetes.Interface
 	KubeSphere() kubesphere.Interface
 	Istio() istioclient.Interface
-	Application() applicationclientset.Interface
 	Snapshot() snapshotclient.Interface
 	ApiExtensions() apiextensionsclient.Interface
 	Discovery() discovery.DiscoveryInterface
+	Prometheus() promresourcesclient.Interface
 	Master() string
 	Config() *rest.Config
 }
@@ -51,13 +53,13 @@ type kubernetesClient struct {
 	// generated clientset
 	ks kubesphere.Interface
 
-	application applicationclientset.Interface
-
 	istio istioclient.Interface
 
 	snapshot snapshotclient.Interface
 
 	apiextensions apiextensionsclient.Interface
+
+	prometheus promresourcesclient.Interface
 
 	master string
 
@@ -79,9 +81,9 @@ func NewKubernetesClientOrDie(options *KubernetesOptions) Client {
 		discoveryClient: discovery.NewDiscoveryClientForConfigOrDie(config),
 		ks:              kubesphere.NewForConfigOrDie(config),
 		istio:           istioclient.NewForConfigOrDie(config),
-		application:     applicationclientset.NewForConfigOrDie(config),
 		snapshot:        snapshotclient.NewForConfigOrDie(config),
 		apiextensions:   apiextensionsclient.NewForConfigOrDie(config),
+		prometheus:      promresourcesclient.NewForConfigOrDie(config),
 		master:          config.Host,
 		config:          config,
 	}
@@ -124,11 +126,6 @@ func NewKubernetesClient(options *KubernetesOptions) (Client, error) {
 		return nil, err
 	}
 
-	k.application, err = applicationclientset.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-
 	k.istio, err = istioclient.NewForConfig(config)
 
 	if err != nil {
@@ -141,6 +138,11 @@ func NewKubernetesClient(options *KubernetesOptions) (Client, error) {
 	}
 
 	k.apiextensions, err = apiextensionsclient.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	k.prometheus, err = promresourcesclient.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -163,10 +165,6 @@ func (k *kubernetesClient) KubeSphere() kubesphere.Interface {
 	return k.ks
 }
 
-func (k *kubernetesClient) Application() applicationclientset.Interface {
-	return k.application
-}
-
 func (k *kubernetesClient) Istio() istioclient.Interface {
 	return k.istio
 }
@@ -177,6 +175,10 @@ func (k *kubernetesClient) Snapshot() snapshotclient.Interface {
 
 func (k *kubernetesClient) ApiExtensions() apiextensionsclient.Interface {
 	return k.apiextensions
+}
+
+func (k *kubernetesClient) Prometheus() promresourcesclient.Interface {
+	return k.prometheus
 }
 
 // master address used to generate kubeconfig for downloading

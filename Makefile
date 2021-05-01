@@ -34,19 +34,26 @@ define ALL_HELP_INFO
 #           debugging tools like delve.
 endef
 .PHONY: all
-all: test ks-apiserver controller-manager
+all: test ks-apiserver ks-controller-manager
 
 # Build ks-apiserver binary
 ks-apiserver: fmt vet
 	hack/gobuild.sh cmd/ks-apiserver
 
-# Build controller-manager binary
-controller-manager: fmt vet
+# Build ks-controller-manager binary
+ks-controller-manager: fmt vet
 	hack/gobuild.sh cmd/controller-manager
+
+# Build e2e binary
+e2e: fmt vet
+	hack/build_e2e.sh test/e2e
 
 # Run go fmt against code 
 fmt:
 	gofmt -w ./pkg ./cmd ./tools ./api
+
+goimports:
+	@hack/update-goimports.sh
 
 # Run go vet against code
 vet:
@@ -79,10 +86,12 @@ openapi:
 # Build the docker image
 docker-build: all
 	hack/docker_build.sh
+docker-build-no-test: ks-apiserver ks-controller-manager
+	hack/docker_build.sh
 
 # Run tests
 test: fmt vet
-	export KUBEBUILDER_CONTROLPLANE_START_TIMEOUT=1m; go test ./pkg/... ./cmd/... -covermode=atomic -coverprofile=coverage.txt
+	export KUBEBUILDER_CONTROLPLANE_START_TIMEOUT=2m; go test ./pkg/... ./cmd/... -covermode=atomic -coverprofile=coverage.txt
 
 .PHONY: clean
 clean:

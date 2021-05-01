@@ -17,8 +17,10 @@ limitations under the License.
 package globalrolebinding
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -34,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
+
 	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
 	iamv1alpha2informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions/iam/v1alpha2"
@@ -42,8 +45,9 @@ import (
 	devops "kubesphere.io/kubesphere/pkg/simple/client/devops"
 
 	"reflect"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
@@ -314,7 +318,7 @@ func (c *Controller) assignClusterAdminRole(globalRoleBinding *iamv1alpha2.Globa
 		return err
 	}
 
-	_, err = c.k8sClient.RbacV1().ClusterRoleBindings().Create(clusterRoleBinding)
+	_, err = c.k8sClient.RbacV1().ClusterRoleBindings().Create(context.Background(), clusterRoleBinding, metav1.CreateOptions{})
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			return nil
@@ -373,7 +377,7 @@ func (c *Controller) createFederatedGlobalRoleBinding(globalRoleBinding *iamv1al
 		AbsPath(fmt.Sprintf("/apis/%s/%s/%s", iamv1alpha2.FedGlobalRoleBindingResource.Group,
 			iamv1alpha2.FedGlobalRoleBindingResource.Version, iamv1alpha2.FedGlobalRoleBindingResource.Name)).
 		Body(data).
-		Do().Error()
+		Do(context.Background()).Error()
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			return nil
@@ -398,7 +402,7 @@ func (c *Controller) updateFederatedGlobalRoleBinding(federatedGlobalRoleBinding
 			iamv1alpha2.FedGlobalRoleBindingResource.Version, iamv1alpha2.FedGlobalRoleBindingResource.Name,
 			federatedGlobalRoleBinding.Name)).
 		Body(data).
-		Do().Error()
+		Do(context.Background()).Error()
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return nil
@@ -416,7 +420,7 @@ func (c *Controller) ensureNotControlledByKubefed(globalRoleBinding *iamv1alpha2
 		}
 		globalRoleBinding = globalRoleBinding.DeepCopy()
 		globalRoleBinding.Labels[constants.KubefedManagedLabel] = "false"
-		_, err := c.ksClient.IamV1alpha2().GlobalRoleBindings().Update(globalRoleBinding)
+		_, err := c.ksClient.IamV1alpha2().GlobalRoleBindings().Update(context.Background(), globalRoleBinding, metav1.UpdateOptions{})
 		if err != nil {
 			klog.Error(err)
 		}

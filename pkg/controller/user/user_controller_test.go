@@ -18,6 +18,10 @@ package user
 
 import (
 	"fmt"
+	"reflect"
+	"testing"
+	"time"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/diff"
@@ -26,14 +30,12 @@ import (
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+
 	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 	"kubesphere.io/kubesphere/pkg/apiserver/authentication/options"
 	"kubesphere.io/kubesphere/pkg/client/clientset/versioned/fake"
 	ksinformers "kubesphere.io/kubesphere/pkg/client/informers/externalversions"
 	ldapclient "kubesphere.io/kubesphere/pkg/simple/client/ldap"
-	"reflect"
-	"testing"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -80,32 +82,32 @@ func newUser(name string) *iamv1alpha2.User {
 	}
 }
 
-func (f *fixture) newController() (*Controller, ksinformers.SharedInformerFactory, kubeinformers.SharedInformerFactory) {
+func (f *fixture) newController() (*userController, ksinformers.SharedInformerFactory, kubeinformers.SharedInformerFactory) {
 	f.ksclient = fake.NewSimpleClientset(f.objects...)
 	f.k8sclient = k8sfake.NewSimpleClientset(f.kubeobjects...)
 	ldapClient := ldapclient.NewSimpleLdap()
 
-	ksinformers := ksinformers.NewSharedInformerFactory(f.ksclient, noResyncPeriodFunc())
-	k8sinformers := kubeinformers.NewSharedInformerFactory(f.k8sclient, noResyncPeriodFunc())
+	ksInformers := ksinformers.NewSharedInformerFactory(f.ksclient, noResyncPeriodFunc())
+	k8sInformers := kubeinformers.NewSharedInformerFactory(f.k8sclient, noResyncPeriodFunc())
 
 	for _, user := range f.userLister {
-		err := ksinformers.Iam().V1alpha2().Users().Informer().GetIndexer().Add(user)
+		err := ksInformers.Iam().V1alpha2().Users().Informer().GetIndexer().Add(user)
 		if err != nil {
 			f.t.Errorf("add user:%s", err)
 		}
 	}
 
 	c := NewUserController(f.k8sclient, f.ksclient, nil,
-		ksinformers.Iam().V1alpha2().Users(),
+		ksInformers.Iam().V1alpha2().Users(),
+		ksInformers.Iam().V1alpha2().LoginRecords(),
 		nil, nil,
-		ksinformers.Iam().V1alpha2().LoginRecords(),
-		k8sinformers.Core().V1().ConfigMaps(),
+		k8sInformers.Core().V1().ConfigMaps(),
 		ldapClient, nil,
 		options.NewAuthenticateOptions(), false)
-	c.userSynced = alwaysReady
+	c.Synced = []cache.InformerSynced{alwaysReady}
 	c.recorder = &record.FakeRecorder{}
 
-	return c, ksinformers, k8sinformers
+	return c, ksInformers, k8sInformers
 }
 
 func (f *fixture) run(userName string) {
@@ -194,6 +196,10 @@ func checkAction(expected, actual core.Action, t *testing.T) {
 		user := object.(*iamv1alpha2.User)
 		expUser.Status.LastTransitionTime = nil
 		user.Status.LastTransitionTime = nil
+		if user.Status.State != nil {
+			disabled := iamv1alpha2.UserDisabled
+			expUser.Status.State = &disabled
+		}
 		if !reflect.DeepEqual(expUser, user) {
 			t.Errorf("Action %s %s has wrong object\nDiff:\n %s",
 				a.GetVerb(), a.GetResource().Resource, diff.ObjectGoPrintSideBySide(expObject, object))
@@ -230,13 +236,12 @@ func filterInformerActions(actions []core.Action) []core.Action {
 
 func (f *fixture) expectUpdateUserStatusAction(user *iamv1alpha2.User) {
 	expect := user.DeepCopy()
+	//expect.Status.State = iamv1alpha2.UserActive
 	expect.Finalizers = []string{"finalizers.kubesphere.io/users"}
 	action := core.NewUpdateAction(schema.GroupVersionResource{Resource: "users"}, "", expect)
 	f.actions = append(f.actions, action)
 
 	expect = expect.DeepCopy()
-	expect.Status.State = iamv1alpha2.UserActive
-	expect.Annotations = map[string]string{iamv1alpha2.PasswordEncryptedAnnotation: "true"}
 	action = core.NewUpdateAction(schema.GroupVersionResource{Resource: "users"}, "", expect)
 	f.actions = append(f.actions, action)
 }

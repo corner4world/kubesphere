@@ -17,7 +17,10 @@ limitations under the License.
 package virtualservice
 
 import (
+	"context"
 	"fmt"
+	"testing"
+
 	apiv1alpha3 "istio.io/api/networking/v1alpha3"
 	"istio.io/client-go/pkg/apis/networking/v1alpha3"
 	istiofake "istio.io/client-go/pkg/clientset/versioned/fake"
@@ -30,12 +33,12 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+
 	"kubesphere.io/kubesphere/pkg/apis/servicemesh/v1alpha2"
 	"kubesphere.io/kubesphere/pkg/client/clientset/versioned/fake"
 	informers "kubesphere.io/kubesphere/pkg/client/informers/externalversions"
-	"kubesphere.io/kubesphere/pkg/controller/virtualservice/util"
+	"kubesphere.io/kubesphere/pkg/controller/utils/servicemesh"
 	"kubesphere.io/kubesphere/pkg/utils/reflectutils"
-	"testing"
 )
 
 var (
@@ -44,6 +47,9 @@ var (
 	applicationName = "bookinfo"
 	namespace       = metav1.NamespaceDefault
 	subsets         = []string{"v1", "v2"}
+	httpPort        = 80
+	grpcPort        = 81
+	mysqlPort       = 82
 )
 
 type fixture struct {
@@ -88,7 +94,7 @@ func (l Labels) WithApplication(name string) Labels {
 
 func (l Labels) WithServiceMeshEnabled(enabled bool) Labels {
 	if enabled {
-		l[util.ServiceMeshEnabledAnnotation] = "true"
+		l[servicemesh.ServiceMeshEnabledAnnotation] = "true"
 	}
 
 	return l
@@ -122,7 +128,7 @@ func newVirtualService(name string, host string, labels map[string]string) *v1al
 	return &vr
 }
 
-func newService(name string, labels map[string]string, selector map[string]string, protocol string, port int) *v1.Service {
+func newService(name string, labels map[string]string, selector map[string]string) *v1.Service {
 	svc := v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -133,9 +139,21 @@ func newService(name string, labels map[string]string, selector map[string]strin
 			Ports: []v1.ServicePort{
 				{
 					Protocol:   v1.ProtocolTCP,
-					Port:       int32(port),
-					Name:       fmt.Sprintf("%s-aaa", protocol),
-					TargetPort: intstr.FromInt(port),
+					Port:       int32(httpPort),
+					Name:       "HTTP-1",
+					TargetPort: intstr.FromInt(httpPort),
+				},
+				{
+					Protocol:   v1.ProtocolTCP,
+					Port:       int32(grpcPort),
+					Name:       "grpc-1",
+					TargetPort: intstr.FromInt(grpcPort),
+				},
+				{
+					Protocol:   v1.ProtocolTCP,
+					Port:       int32(mysqlPort),
+					Name:       "mysql-1",
+					TargetPort: intstr.FromInt(mysqlPort),
 				},
 			},
 			Selector: selector,
@@ -280,7 +298,7 @@ func (f *fixture) run_(serviceKey string, expectedVS *v1alpha3.VirtualService, s
 	}
 
 	if expectedVS != nil {
-		got, err := c.virtualServiceClient.NetworkingV1alpha3().VirtualServices(namespace).Get(name, metav1.GetOptions{})
+		got, err := c.virtualServiceClient.NetworkingV1alpha3().VirtualServices(namespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
 			f.t.Errorf("error getting virtualservice: %v", err)
 			return
@@ -298,7 +316,7 @@ func (f *fixture) run_(serviceKey string, expectedVS *v1alpha3.VirtualService, s
 func TestInitialStrategyCreate(t *testing.T) {
 	f := newFixture(t)
 
-	svc := newService("foo", NewLabels().WithApplication(applicationName).WithApp(serviceName), NewLabels().WithApplication(serviceName).WithApp(applicationName), "http", 80)
+	svc := newService("foo", NewLabels().WithApplication(applicationName).WithApp(serviceName), NewLabels().WithApplication(serviceName).WithApp(applicationName))
 	dr := newDestinationRule(svc.Name, toHost(svc), NewLabels().WithApp("foo").WithApplication(applicationName), subsets[0])
 	svc.Annotations = NewLabels().WithServiceMeshEnabled(true)
 
@@ -309,21 +327,46 @@ func TestInitialStrategyCreate(t *testing.T) {
 
 	vs := newVirtualService(svc.Name, "foo", NewLabels().WithApplication("bookinfo").WithApp(svc.Name))
 	vs.Annotations = make(map[string]string)
-	vs.Spec.Http = []*apiv1alpha3.HTTPRoute{
-		{
-			Route: []*apiv1alpha3.HTTPRouteDestination{
-				{
-					Destination: &apiv1alpha3.Destination{
-						Host:   svc.Name,
-						Subset: "v1",
-						Port: &apiv1alpha3.PortSelector{
-							Number: uint32(svc.Spec.Ports[0].Port),
+	for _, port := range svc.Spec.Ports {
+		if servicemesh.SupportHttpProtocol(port.Name) {
+			httpRoute := apiv1alpha3.HTTPRoute{
+				Route: []*apiv1alpha3.HTTPRouteDestination{
+					{
+						Destination: &apiv1alpha3.Destination{
+							Host:   svc.Name,
+							Subset: "v1",
+							Port: &apiv1alpha3.PortSelector{
+								Number: uint32(port.Port),
+							},
 						},
+						Weight: 100,
 					},
-					Weight: 100,
 				},
-			},
-		},
+				Match: []*apiv1alpha3.HTTPMatchRequest{
+					{Port: uint32(port.Port)},
+				},
+			}
+			vs.Spec.Http = append(vs.Spec.Http, &httpRoute)
+		} else {
+			tcpRoute := apiv1alpha3.TCPRoute{
+				Route: []*apiv1alpha3.RouteDestination{
+					{
+						Destination: &apiv1alpha3.Destination{
+							Host:   svc.Name,
+							Subset: "v1",
+							Port: &apiv1alpha3.PortSelector{
+								Number: uint32(port.Port),
+							},
+						},
+						Weight: 100,
+					},
+				},
+				Match: []*apiv1alpha3.L4MatchAttributes{
+					{Port: uint32(port.Port)},
+				},
+			}
+			vs.Spec.Tcp = append(vs.Spec.Tcp, &tcpRoute)
+		}
 	}
 
 	key, err := cache.MetaNamespaceKeyFunc(svc)
@@ -353,7 +396,7 @@ func runStrategy(t *testing.T, svc *v1.Service, dr *v1alpha3.DestinationRule, st
 
 func TestStrategies(t *testing.T) {
 
-	svc := newService(serviceName, NewLabels().WithApplication(applicationName).WithApp(serviceName), NewLabels().WithApplication(applicationName).WithApp(serviceName), "http", 80)
+	svc := newService(serviceName, NewLabels().WithApplication(applicationName).WithApp(serviceName), NewLabels().WithApplication(applicationName).WithApp(serviceName))
 	defaultDr := newDestinationRule(svc.Name, toHost(svc), NewLabels().WithApp(serviceName).WithApplication(applicationName), subsets...)
 	svc.Annotations = NewLabels().WithServiceMeshEnabled(true)
 	defaultStrategy := &v1alpha2.Strategy{
@@ -394,6 +437,9 @@ func TestStrategies(t *testing.T) {
 									Weight: 20,
 								},
 							},
+							Match: []*apiv1alpha3.HTTPMatchRequest{
+								{Port: 0},
+							},
 						},
 					},
 				},
@@ -411,7 +457,7 @@ func TestStrategies(t *testing.T) {
 						Host:   svc.Name,
 						Subset: "v1",
 						Port: &apiv1alpha3.PortSelector{
-							Number: uint32(svc.Spec.Ports[0].Port),
+							Number: uint32(httpPort),
 						},
 					},
 					Weight: 80,
@@ -421,12 +467,38 @@ func TestStrategies(t *testing.T) {
 						Host:   svc.Name,
 						Subset: "v2",
 						Port: &apiv1alpha3.PortSelector{
-							Number: uint32(svc.Spec.Ports[0].Port),
+							Number: uint32(httpPort),
 						},
 					},
 					Weight: 20,
 				},
 			},
+			Match: []*apiv1alpha3.HTTPMatchRequest{{Port: uint32(httpPort)}},
+		},
+		{
+			Route: []*apiv1alpha3.HTTPRouteDestination{
+				{
+					Destination: &apiv1alpha3.Destination{
+						Host:   svc.Name,
+						Subset: "v1",
+						Port: &apiv1alpha3.PortSelector{
+							Number: uint32(grpcPort),
+						},
+					},
+					Weight: 80,
+				},
+				{
+					Destination: &apiv1alpha3.Destination{
+						Host:   svc.Name,
+						Subset: "v2",
+						Port: &apiv1alpha3.PortSelector{
+							Number: uint32(grpcPort),
+						},
+					},
+					Weight: 20,
+				},
+			},
+			Match: []*apiv1alpha3.HTTPMatchRequest{{Port: uint32(grpcPort)}},
 		},
 	}
 
@@ -442,6 +514,8 @@ func TestStrategies(t *testing.T) {
 		expected := defaultExpected.DeepCopy()
 		expected.Spec.Http[0].Route[0].Weight = 0
 		expected.Spec.Http[0].Route[1].Weight = 100
+		expected.Spec.Http[1].Route[0].Weight = 0
+		expected.Spec.Http[1].Route[1].Weight = 100
 		runStrategy(t, svc, defaultDr, strategy, expected)
 	})
 
@@ -453,6 +527,7 @@ func TestStrategies(t *testing.T) {
 		expected.Spec.Http[0].Route[0].Weight = 100
 		expected.Spec.Http[0].Route[0].Destination.Subset = "v2"
 		expected.Spec.Http[0].Route = expected.Spec.Http[0].Route[:1]
+		expected.Spec.Http = expected.Spec.Http[:1]
 		runStrategy(t, svc, defaultDr, strategy, expected)
 	})
 
@@ -482,6 +557,20 @@ func TestStrategies(t *testing.T) {
 				Uri: &apiv1alpha3.StringMatch{
 					MatchType: &apiv1alpha3.StringMatch_Prefix{Prefix: "/apis"},
 				},
+				Port: expected.Spec.Http[0].Route[0].Destination.Port.Number,
+			},
+		}
+		expected.Spec.Http[1].Match = []*apiv1alpha3.HTTPMatchRequest{
+			{
+				Headers: map[string]*apiv1alpha3.StringMatch{
+					"X-USER": {
+						MatchType: &apiv1alpha3.StringMatch_Regex{Regex: "users"},
+					},
+				},
+				Uri: &apiv1alpha3.StringMatch{
+					MatchType: &apiv1alpha3.StringMatch_Prefix{Prefix: "/apis"},
+				},
+				Port: expected.Spec.Http[1].Route[0].Destination.Port.Number,
 			},
 		}
 		runStrategy(t, svc, defaultDr, strategy, expected)

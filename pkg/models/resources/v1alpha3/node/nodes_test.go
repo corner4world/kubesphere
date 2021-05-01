@@ -17,17 +17,19 @@ limitations under the License.
 package node
 
 import (
+	"strconv"
+	"testing"
+
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+
 	"kubesphere.io/kubesphere/pkg/api"
 	"kubesphere.io/kubesphere/pkg/apiserver/query"
 	"kubesphere.io/kubesphere/pkg/models/resources/v1alpha3"
-	"strconv"
-	"testing"
 )
 
 // mergeResourceLists will merge resoure lists. When two lists have the same resourece, the value from
@@ -143,6 +145,8 @@ func TestNodesGetterGet(t *testing.T) {
 	}
 	nodeGot := got.(*corev1.Node)
 
+	// ignore last-annotated-at annotation
+	delete(nodeGot.Annotations, nodeAnnotatedAt)
 	if diff := cmp.Diff(nodeGot.Annotations, expectedAnnotations); len(diff) != 0 {
 		t.Errorf("%T, diff(-got, +expected), %v", expectedAnnotations, nodeGot.Annotations)
 	}

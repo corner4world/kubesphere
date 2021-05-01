@@ -17,21 +17,24 @@ limitations under the License.
 package devops
 
 import (
-	"code.cloudfoundry.org/bytefmt"
+	"context"
 	"fmt"
+	"mime/multipart"
+	"net/http"
+	"reflect"
+
+	"code.cloudfoundry.org/bytefmt"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	awsS3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/emicklei/go-restful"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog"
+
 	"kubesphere.io/kubesphere/pkg/apis/devops/v1alpha1"
 	"kubesphere.io/kubesphere/pkg/client/clientset/versioned"
 	"kubesphere.io/kubesphere/pkg/client/informers/externalversions"
 	"kubesphere.io/kubesphere/pkg/simple/client/s3"
-	"mime/multipart"
-	"net/http"
-	"reflect"
 )
 
 const (
@@ -128,7 +131,7 @@ func (s *s2iBinaryUploader) UploadS2iBinary(namespace, name, md5 string, fileHea
 		copy.Spec.UploadTimeStamp = new(metav1.Time)
 	}
 	*copy.Spec.UploadTimeStamp = metav1.Now()
-	copy, err = s.client.DevopsV1alpha1().S2iBinaries(namespace).Update(copy)
+	copy, err = s.client.DevopsV1alpha1().S2iBinaries(namespace).Update(context.Background(), copy, metav1.UpdateOptions{})
 	if err != nil {
 		klog.Error(err)
 		return nil, err
@@ -167,7 +170,7 @@ func (s *s2iBinaryUploader) DownloadS2iBinary(namespace, name, fileName string) 
 func (s *s2iBinaryUploader) SetS2iBinaryStatus(s2ibin *v1alpha1.S2iBinary, status string) (*v1alpha1.S2iBinary, error) {
 	copy := s2ibin.DeepCopy()
 	copy.Status.Phase = status
-	copy, err := s.client.DevopsV1alpha1().S2iBinaries(s2ibin.Namespace).Update(copy)
+	copy, err := s.client.DevopsV1alpha1().S2iBinaries(s2ibin.Namespace).Update(context.Background(), copy, metav1.UpdateOptions{})
 	if err != nil {
 		klog.Error(err)
 		return nil, err
@@ -180,13 +183,13 @@ func (s *s2iBinaryUploader) SetS2iBinaryStatusWithRetry(s2ibin *v1alpha1.S2iBina
 	var bin *v1alpha1.S2iBinary
 	var err error
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		bin, err = s.client.DevopsV1alpha1().S2iBinaries(s2ibin.Namespace).Get(s2ibin.Name, metav1.GetOptions{})
+		bin, err = s.client.DevopsV1alpha1().S2iBinaries(s2ibin.Namespace).Get(context.Background(), s2ibin.Name, metav1.GetOptions{})
 		if err != nil {
 			klog.Error(err)
 			return err
 		}
 		bin.Status.Phase = status
-		bin, err = s.client.DevopsV1alpha1().S2iBinaries(s2ibin.Namespace).Update(bin)
+		bin, err = s.client.DevopsV1alpha1().S2iBinaries(s2ibin.Namespace).Update(context.Background(), bin, metav1.UpdateOptions{})
 		if err != nil {
 			klog.Error(err)
 			return err

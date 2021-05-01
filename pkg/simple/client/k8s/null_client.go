@@ -17,14 +17,15 @@ limitations under the License.
 package k8s
 
 import (
-	snapshotclient "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/clientset/versioned"
+	snapshotclient "github.com/kubernetes-csi/external-snapshotter/client/v3/clientset/versioned"
+	promresourcesclient "github.com/prometheus-operator/prometheus-operator/pkg/client/versioned"
 	istio "istio.io/client-go/pkg/clientset/versioned"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
-	application "sigs.k8s.io/application/pkg/client/clientset/versioned"
 )
 
 type nullClient struct {
@@ -46,10 +47,6 @@ func (n nullClient) Istio() istio.Interface {
 	return nil
 }
 
-func (n nullClient) Application() application.Interface {
-	return nil
-}
-
 func (n nullClient) Snapshot() snapshotclient.Interface {
 	return nil
 }
@@ -59,6 +56,10 @@ func (n nullClient) ApiExtensions() apiextensionsclient.Interface {
 }
 
 func (n nullClient) Discovery() discovery.DiscoveryInterface {
+	return nil
+}
+
+func (n *nullClient) Prometheus() promresourcesclient.Interface {
 	return nil
 }
 

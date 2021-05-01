@@ -17,15 +17,19 @@ limitations under the License.
 package group
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog"
+
 	"kubesphere.io/kubesphere/pkg/api"
 	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 	tenantv1alpha1 "kubesphere.io/kubesphere/pkg/apis/tenant/v1alpha1"
@@ -43,8 +47,8 @@ type GroupOperator interface {
 	UpdateGroup(workspace string, group *iamv1alpha2.Group) (*iamv1alpha2.Group, error)
 	PatchGroup(workspace string, group *iamv1alpha2.Group) (*iamv1alpha2.Group, error)
 	DeleteGroupBinding(workspace, name string) error
-	CreateGroupBinding(workspace, groupName, userName string) error
-	ListGroupBindings(workspace, group string, queryParam *query.Query) (*api.ListResult, error)
+	CreateGroupBinding(workspace, groupName, userName string) (*iamv1alpha2.GroupBinding, error)
+	ListGroupBindings(workspace string, queryParam *query.Query) (*api.ListResult, error)
 }
 
 type groupOperator struct {
@@ -55,7 +59,7 @@ type groupOperator struct {
 
 func New(informers informers.InformerFactory, ksclient kubesphere.Interface, k8sclient kubernetes.Interface) GroupOperator {
 	return &groupOperator{
-		resourceGetter: resourcesv1alpha3.NewResourceGetter(informers),
+		resourceGetter: resourcesv1alpha3.NewResourceGetter(informers, nil),
 		k8sclient:      k8sclient,
 		ksclient:       ksclient,
 	}
@@ -77,8 +81,43 @@ func (t *groupOperator) ListGroups(workspace string, queryParam *query.Query) (*
 }
 
 // CreateGroup adds a workspace label to group which indicates group is under the workspace
-func (t *groupOperator) CreateGroup(workspace string, namespace *iamv1alpha2.Group) (*iamv1alpha2.Group, error) {
-	return t.ksclient.IamV1alpha2().Groups().Create(labelGroupWithWorkspaceName(namespace, workspace))
+func (t *groupOperator) CreateGroup(workspace string, group *iamv1alpha2.Group) (*iamv1alpha2.Group, error) {
+
+	if group.GenerateName == "" {
+		err := errors.NewInvalid(iamv1alpha2.SchemeGroupVersion.WithKind(iamv1alpha2.ResourcePluralGroup).GroupKind(),
+			"", []*field.Error{field.Required(field.NewPath("metadata.generateName"), "generateName is required")})
+		klog.Error(err)
+		return nil, err
+	}
+	// generateName is used as displayName
+	// ensure generateName is unique in workspace scope
+	if unique, err := t.isGenerateNameUnique(workspace, group.GenerateName); err != nil {
+		return nil, err
+	} else if !unique {
+		err = errors.NewConflict(iamv1alpha2.Resource(iamv1alpha2.ResourcePluralGroup),
+			group.GenerateName, fmt.Errorf("a group named %s already exists in the workspace", group.GenerateName))
+		klog.Error(err)
+		return nil, err
+	}
+
+	return t.ksclient.IamV1alpha2().Groups().Create(context.Background(), labelGroupWithWorkspaceName(group, workspace), metav1.CreateOptions{})
+}
+
+func (t *groupOperator) isGenerateNameUnique(workspace, generateName string) (bool, error) {
+
+	result, err := t.ListGroups(workspace, query.New())
+
+	if err != nil {
+		klog.Error(err)
+		return false, err
+	}
+	for _, obj := range result.Items {
+		g := obj.(*iamv1alpha2.Group)
+		if g.GenerateName == generateName {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func (t *groupOperator) DescribeGroup(workspace, group string) (*iamv1alpha2.Group, error) {
@@ -100,7 +139,7 @@ func (t *groupOperator) DeleteGroup(workspace, group string) error {
 	if err != nil {
 		return err
 	}
-	return t.ksclient.IamV1alpha2().Groups().Delete(group, metav1.NewDeleteOptions(0))
+	return t.ksclient.IamV1alpha2().Groups().Delete(context.Background(), group, *metav1.NewDeleteOptions(0))
 }
 
 func (t *groupOperator) UpdateGroup(workspace string, group *iamv1alpha2.Group) (*iamv1alpha2.Group, error) {
@@ -109,7 +148,7 @@ func (t *groupOperator) UpdateGroup(workspace string, group *iamv1alpha2.Group) 
 		return nil, err
 	}
 	group = labelGroupWithWorkspaceName(group, workspace)
-	return t.ksclient.IamV1alpha2().Groups().Update(group)
+	return t.ksclient.IamV1alpha2().Groups().Update(context.Background(), group, metav1.UpdateOptions{})
 }
 
 func (t *groupOperator) PatchGroup(workspace string, group *iamv1alpha2.Group) (*iamv1alpha2.Group, error) {
@@ -124,7 +163,7 @@ func (t *groupOperator) PatchGroup(workspace string, group *iamv1alpha2.Group) (
 	if err != nil {
 		return nil, err
 	}
-	return t.ksclient.IamV1alpha2().Groups().Patch(group.Name, types.MergePatchType, data)
+	return t.ksclient.IamV1alpha2().Groups().Patch(context.Background(), group.Name, types.MergePatchType, data, metav1.PatchOptions{})
 }
 
 func (t *groupOperator) DeleteGroupBinding(workspace, name string) error {
@@ -139,14 +178,14 @@ func (t *groupOperator) DeleteGroupBinding(workspace, name string) error {
 		return err
 	}
 
-	return t.ksclient.IamV1alpha2().GroupBindings().Delete(name, metav1.NewDeleteOptions(0))
+	return t.ksclient.IamV1alpha2().GroupBindings().Delete(context.Background(), name, *metav1.NewDeleteOptions(0))
 }
 
-func (t *groupOperator) CreateGroupBinding(workspace, groupName, userName string) error {
+func (t *groupOperator) CreateGroupBinding(workspace, groupName, userName string) (*iamv1alpha2.GroupBinding, error) {
 
 	groupBinding := iamv1alpha2.GroupBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: fmt.Sprintf("%s-%s", groupName, userName),
+			GenerateName: fmt.Sprintf("%s-%s-", groupName, userName),
 			Labels: map[string]string{
 				iamv1alpha2.UserReferenceLabel:  userName,
 				iamv1alpha2.GroupReferenceLabel: groupName,
@@ -161,21 +200,21 @@ func (t *groupOperator) CreateGroupBinding(workspace, groupName, userName string
 		},
 	}
 
-	if _, err := t.ksclient.IamV1alpha2().GroupBindings().Create(&groupBinding); err != nil {
-		return err
-	}
-
-	return nil
+	return t.ksclient.IamV1alpha2().GroupBindings().Create(context.Background(), &groupBinding, metav1.CreateOptions{})
 }
 
-func (t *groupOperator) ListGroupBindings(workspace, group string, queryParam *query.Query) (*api.ListResult, error) {
+func (t *groupOperator) ListGroupBindings(workspace string, query *query.Query) (*api.ListResult, error) {
 
-	if group != "" && workspace != "" {
-		// filter by group
-		queryParam.Filters[query.FieldLabel] = query.Value(fmt.Sprintf("%s=%s", iamv1alpha2.GroupReferenceLabel, group))
+	lableSelector, err := labels.ConvertSelectorToLabelsMap(query.LabelSelector)
+	if err != nil {
+		klog.Error(err)
+		return nil, err
 	}
+	// workspace resources must be filtered by workspace
+	wsSelector := labels.Set{tenantv1alpha1.WorkspaceLabel: workspace}
+	query.LabelSelector = labels.Merge(lableSelector, wsSelector).String()
 
-	result, err := t.resourceGetter.List("groupbindings", "", queryParam)
+	result, err := t.resourceGetter.List("groupbindings", "", query)
 	if err != nil {
 		klog.Error(err)
 		return nil, err

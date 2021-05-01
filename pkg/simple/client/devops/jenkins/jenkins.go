@@ -21,14 +21,17 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"k8s.io/klog"
-	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"k8s.io/klog"
+
+	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 )
 
 // Basic Authentication
@@ -841,10 +844,14 @@ func (j *Jenkins) CheckCron(projectName string, httpParameters *devops.HttpParam
 		return nil, err
 	}
 
+	query := url.Values{
+		"value": []string{cron.Cron},
+	}
+
 	if cron.PipelineName != "" {
-		path = fmt.Sprintf(CheckPipelienCronUrl, projectName, cron.PipelineName, cron.Cron)
+		path = fmt.Sprintf(CheckPipelienCronUrl, projectName, cron.PipelineName, query.Encode())
 	} else {
-		path = fmt.Sprintf(CheckCronUrl, projectName, cron.Cron)
+		path = fmt.Sprintf(CheckCronUrl, projectName, query.Encode())
 	}
 
 	PipelineOjb := &Pipeline{
@@ -867,7 +874,7 @@ func (j *Jenkins) ToJenkinsfile(httpParameters *devops.HttpParameters) (*devops.
 	return res, err
 }
 
-func (j *Jenkins) ToJson(httpParameters *devops.HttpParameters) (*devops.ResJson, error) {
+func (j *Jenkins) ToJson(httpParameters *devops.HttpParameters) (map[string]interface{}, error) {
 	PipelineOjb := &Pipeline{
 		HttpParameters: httpParameters,
 		Jenkins:        j,

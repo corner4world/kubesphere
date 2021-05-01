@@ -17,11 +17,17 @@ limitations under the License.
 package user
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strconv"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/validation"
+
+	utilwait "k8s.io/apimachinery/pkg/util/wait"
+
+	"kubesphere.io/kubesphere/pkg/controller/utils/controller"
 
 	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
@@ -31,7 +37,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +46,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
 	iamv1alpha2 "kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 	authoptions "kubesphere.io/kubesphere/pkg/apiserver/authentication/options"
 	kubesphere "kubesphere.io/kubesphere/pkg/client/clientset/versioned"
@@ -53,7 +60,6 @@ import (
 	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 	ldapclient "kubesphere.io/kubesphere/pkg/simple/client/ldap"
 	"kubesphere.io/kubesphere/pkg/utils/sliceutil"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const (
@@ -62,46 +68,39 @@ const (
 	// is synced successfully
 	messageResourceSynced = "User synced successfully"
 	controllerName        = "user-controller"
-
 	// user finalizer
-	finalizer = "finalizers.kubesphere.io/users"
+	finalizer       = "finalizers.kubesphere.io/users"
+	interval        = time.Second
+	timeout         = 15 * time.Second
+	syncFailMessage = "Failed to sync: %s"
 )
 
-type Controller struct {
-	k8sClient         kubernetes.Interface
-	ksClient          kubesphere.Interface
-	kubeconfig        kubeconfig.Interface
-	userLister        iamv1alpha2listers.UserLister
-	userSynced        cache.InformerSynced
-	loginRecordLister iamv1alpha2listers.LoginRecordLister
-	loginRecordSynced cache.InformerSynced
-	cmSynced          cache.InformerSynced
-	fedUserCache      cache.Store
-	fedUserController cache.Controller
-	ldapClient        ldapclient.Interface
-	devopsClient      devops.Interface
-	// workqueue is a rate limited work queue. This is used to queue work to be
-	// processed instead of performing it as soon as a change happens. This
-	// means we can ensure we only process a fixed amount of resources at a
-	// time, and makes it easy to ensure we are never processing the same item
-	// simultaneously in two different workers.
-	workqueue workqueue.RateLimitingInterface
-	// recorder is an event recorder for recording Event resources to the
-	// Kubernetes API.
-	recorder              record.EventRecorder
+type userController struct {
+	controller.BaseController
+	k8sClient             kubernetes.Interface
+	ksClient              kubesphere.Interface
+	kubeconfig            kubeconfig.Interface
+	userLister            iamv1alpha2listers.UserLister
+	loginRecordLister     iamv1alpha2listers.LoginRecordLister
+	fedUserCache          cache.Store
+	ldapClient            ldapclient.Interface
+	devopsClient          devops.Interface
 	authenticationOptions *authoptions.AuthenticationOptions
 	multiClusterEnabled   bool
+	// recorder is an event recorder for recording Event resources to the
+	// Kubernetes API.
+	recorder record.EventRecorder
 }
 
-func NewUserController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface,
-	config *rest.Config, userInformer iamv1alpha2informers.UserInformer,
-	fedUserCache cache.Store, fedUserController cache.Controller,
+func NewUserController(k8sClient kubernetes.Interface, ksClient kubesphere.Interface, config *rest.Config,
+	userInformer iamv1alpha2informers.UserInformer,
 	loginRecordInformer iamv1alpha2informers.LoginRecordInformer,
+	fedUserCache cache.Store, fedUserController cache.Controller,
 	configMapInformer corev1informers.ConfigMapInformer,
 	ldapClient ldapclient.Interface,
 	devopsClient devops.Interface,
 	authenticationOptions *authoptions.AuthenticationOptions,
-	multiClusterEnabled bool) *Controller {
+	multiClusterEnabled bool) *userController {
 
 	utilruntime.Must(kubespherescheme.AddToScheme(scheme.Scheme))
 
@@ -113,152 +112,48 @@ func NewUserController(k8sClient kubernetes.Interface, ksClient kubesphere.Inter
 	if config != nil {
 		kubeconfigOperator = kubeconfig.NewOperator(k8sClient, configMapInformer, config)
 	}
-	ctl := &Controller{
+	ctl := &userController{
+		BaseController: controller.BaseController{
+			Workqueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "User"),
+			Synced: []cache.InformerSynced{
+				userInformer.Informer().HasSynced,
+				configMapInformer.Informer().HasSynced,
+				loginRecordInformer.Informer().HasSynced,
+			},
+			Name: controllerName,
+		},
 		k8sClient:             k8sClient,
 		ksClient:              ksClient,
 		kubeconfig:            kubeconfigOperator,
 		userLister:            userInformer.Lister(),
-		userSynced:            userInformer.Informer().HasSynced,
 		loginRecordLister:     loginRecordInformer.Lister(),
-		loginRecordSynced:     loginRecordInformer.Informer().HasSynced,
-		cmSynced:              configMapInformer.Informer().HasSynced,
 		fedUserCache:          fedUserCache,
-		fedUserController:     fedUserController,
 		ldapClient:            ldapClient,
 		devopsClient:          devopsClient,
-		workqueue:             workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Users"),
 		recorder:              recorder,
 		multiClusterEnabled:   multiClusterEnabled,
 		authenticationOptions: authenticationOptions,
 	}
-
+	if multiClusterEnabled {
+		ctl.Synced = append(ctl.Synced, fedUserController.HasSynced)
+	}
+	ctl.Handler = ctl.reconcile
 	klog.Info("Setting up event handlers")
 	userInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: ctl.enqueueUser,
+		AddFunc: ctl.Enqueue,
 		UpdateFunc: func(old, new interface{}) {
-			ctl.enqueueUser(new)
+			ctl.Enqueue(new)
 		},
-		DeleteFunc: ctl.enqueueUser,
-	})
-
-	loginRecordInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(new interface{}) {
-			if err := ctl.enqueueLogin(new); err != nil {
-				klog.Errorf("Failed to enqueue login object, error: %v", err)
-			}
-		},
+		DeleteFunc: ctl.Enqueue,
 	})
 	return ctl
 }
 
-func (c *Controller) Run(threadiness int, stopCh <-chan struct{}) error {
-	defer utilruntime.HandleCrash()
-	defer c.workqueue.ShutDown()
-
-	// Start the informer factories to begin populating the informer caches
-	klog.Info("Starting User controller")
-
-	// Wait for the caches to be synced before starting workers
-	klog.Info("Waiting for informer caches to sync")
-
-	synced := make([]cache.InformerSynced, 0)
-	synced = append(synced, c.userSynced, c.loginRecordSynced, c.cmSynced)
-	if c.multiClusterEnabled {
-		synced = append(synced, c.fedUserController.HasSynced)
-	}
-
-	if ok := cache.WaitForCacheSync(stopCh, synced...); !ok {
-		return fmt.Errorf("failed to wait for caches to sync")
-	}
-
-	klog.Info("Starting workers")
-	// Launch two workers to process Foo resources
-	for i := 0; i < threadiness; i++ {
-		go wait.Until(c.runWorker, time.Second, stopCh)
-	}
-
-	klog.Info("Started workers")
-	<-stopCh
-	klog.Info("Shutting down workers")
-	return nil
+func (c *userController) Start(stopCh <-chan struct{}) error {
+	return c.Run(5, stopCh)
 }
 
-func (c *Controller) enqueueUser(obj interface{}) {
-	var key string
-	var err error
-	if key, err = cache.MetaNamespaceKeyFunc(obj); err != nil {
-		utilruntime.HandleError(err)
-		return
-	}
-	c.workqueue.Add(key)
-}
-
-func (c *Controller) runWorker() {
-	for c.processNextWorkItem() {
-	}
-}
-
-func (c *Controller) processNextWorkItem() bool {
-	obj, shutdown := c.workqueue.Get()
-
-	if shutdown {
-		return false
-	}
-
-	err := func(obj interface{}) error {
-		defer c.workqueue.Done(obj)
-		var key string
-		var ok bool
-		if key, ok = obj.(string); !ok {
-			c.workqueue.Forget(obj)
-			utilruntime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
-			return nil
-		}
-		if err := c.reconcile(key); err != nil {
-			c.workqueue.AddRateLimited(key)
-			return fmt.Errorf("error syncing '%s': %s, requeuing", key, err.Error())
-		}
-		c.workqueue.Forget(obj)
-		klog.Infof("Successfully synced %s:%s", "key", key)
-		return nil
-	}(obj)
-
-	if err != nil {
-		utilruntime.HandleError(err)
-		return true
-	}
-
-	return true
-}
-
-// enqueueLogin accepts a login object and set user lastLoginTime field
-func (c *Controller) enqueueLogin(object interface{}) error {
-	login := object.(*iamv1alpha2.LoginRecord)
-	username, ok := login.Labels[iamv1alpha2.UserReferenceLabel]
-
-	if !ok || len(username) == 0 {
-		return fmt.Errorf("login doesn't belong to any user")
-	}
-
-	user, err := c.userLister.Get(username)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("user %s doesn't exist any more, login record will be deleted later", username)
-		}
-		return err
-	}
-
-	if user.Status.LastLoginTime == nil || user.Status.LastLoginTime.Before(&login.CreationTimestamp) {
-		user.Status.LastLoginTime = &login.CreationTimestamp
-		user, err = c.ksClient.IamV1alpha2().Users().Update(user)
-		return err
-	}
-
-	return nil
-}
-
-func (c *Controller) reconcile(key string) error {
-
+func (c *userController) reconcile(key string) error {
 	// Get the user with this name
 	user, err := c.userLister.Get(key)
 	if err != nil {
@@ -277,41 +172,42 @@ func (c *Controller) reconcile(key string) error {
 		// then lets add the finalizer and update the object.
 		if !sliceutil.HasString(user.Finalizers, finalizer) {
 			user.ObjectMeta.Finalizers = append(user.ObjectMeta.Finalizers, finalizer)
-
-			if user, err = c.ksClient.IamV1alpha2().Users().Update(user); err != nil {
+			if user, err = c.ksClient.IamV1alpha2().Users().Update(context.Background(), user, metav1.UpdateOptions{}); err != nil {
+				klog.Error(err)
 				return err
 			}
 		}
 	} else {
 		// The object is being deleted
 		if sliceutil.HasString(user.ObjectMeta.Finalizers, finalizer) {
-
-			klog.V(4).Infof("delete user %s", key)
-			if err = c.ldapClient.Delete(key); err != nil && err != ldapclient.ErrUserNotExists {
-				klog.Error(err)
-				return err
+			// we do not need to delete the user from ldapServer when ldapClient is nil
+			if c.ldapClient != nil {
+				if err = c.waitForDeleteFromLDAP(key); err != nil {
+					// ignore timeout error
+					c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
+				}
 			}
 
 			if err = c.deleteRoleBindings(user); err != nil {
-				klog.Error(err)
+				c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
 				return err
 			}
 
 			if err = c.deleteGroupBindings(user); err != nil {
-				klog.Error(err)
+				c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
 				return err
 			}
 
 			if c.devopsClient != nil {
 				// unassign jenkins role, unassign multiple times is allowed
-				if err := c.unassignDevOpsAdminRole(user); err != nil {
-					klog.Error(err)
-					return err
+				if err = c.waitForUnassignDevOpsAdminRole(user); err != nil {
+					// ignore timeout error
+					c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
 				}
 			}
 
 			if err = c.deleteLoginRecords(user); err != nil {
-				klog.Error(err)
+				c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
 				return err
 			}
 
@@ -320,7 +216,8 @@ func (c *Controller) reconcile(key string) error {
 				return item == finalizer
 			})
 
-			if user, err = c.ksClient.IamV1alpha2().Users().Update(user); err != nil {
+			if user, err = c.ksClient.IamV1alpha2().Users().Update(context.Background(), user, metav1.UpdateOptions{}); err != nil {
+				klog.Error(err)
 				return err
 			}
 		}
@@ -329,12 +226,16 @@ func (c *Controller) reconcile(key string) error {
 		return nil
 	}
 
-	if err = c.ldapSync(user); err != nil {
-		klog.Error(err)
-		return err
+	// we do not need to sync ldap info when ldapClient is nil
+	if c.ldapClient != nil {
+		// ignore errors if timeout
+		if err = c.waitForSyncToLDAP(user); err != nil {
+			// ignore timeout error
+			c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
+		}
 	}
 
-	if user, err = c.ensurePasswordIsEncrypted(user); err != nil {
+	if user, err = c.encryptPassword(user); err != nil {
 		klog.Error(err)
 		return err
 	}
@@ -348,6 +249,7 @@ func (c *Controller) reconcile(key string) error {
 		// ensure user kubeconfig configmap is created
 		if err = c.kubeconfig.CreateKubeConfig(user); err != nil {
 			klog.Error(err)
+			c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
 			return err
 		}
 	}
@@ -355,16 +257,16 @@ func (c *Controller) reconcile(key string) error {
 	if c.devopsClient != nil {
 		// assign jenkins role after user create, assign multiple times is allowed
 		// used as logged-in users can do anything
-		if err := c.assignDevOpsAdminRole(user); err != nil {
-			klog.Error(err)
-			return err
+		if err = c.waitForAssignDevOpsAdminRole(user); err != nil {
+			// ignore timeout error
+			c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
 		}
 	}
 
 	// synchronization through kubefed-controller when multi cluster is enabled
 	if c.multiClusterEnabled {
 		if err = c.multiClusterSync(user); err != nil {
-			klog.Error(err)
+			c.recorder.Event(user, corev1.EventTypeWarning, controller.FailedSynced, fmt.Sprintf(syncFailMessage, err))
 			return err
 		}
 	}
@@ -373,14 +275,9 @@ func (c *Controller) reconcile(key string) error {
 	return nil
 }
 
-func (c *Controller) Start(stopCh <-chan struct{}) error {
-	return c.Run(5, stopCh)
-}
-
-func (c *Controller) ensurePasswordIsEncrypted(user *iamv1alpha2.User) (*iamv1alpha2.User, error) {
-	encrypted := user.Annotations[iamv1alpha2.PasswordEncryptedAnnotation] == "true"
-	// password is not encrypted
-	if !encrypted {
+func (c *userController) encryptPassword(user *iamv1alpha2.User) (*iamv1alpha2.User, error) {
+	// password is not empty and not encrypted
+	if user.Spec.EncryptedPassword != "" && !isEncrypted(user.Spec.EncryptedPassword) {
 		password, err := encrypt(user.Spec.EncryptedPassword)
 		if err != nil {
 			klog.Error(err)
@@ -389,29 +286,24 @@ func (c *Controller) ensurePasswordIsEncrypted(user *iamv1alpha2.User) (*iamv1al
 		user = user.DeepCopy()
 		user.Spec.EncryptedPassword = password
 		if user.Annotations == nil {
-			user.Annotations = make(map[string]string, 0)
+			user.Annotations = make(map[string]string)
 		}
+		user.Annotations[iamv1alpha2.LastPasswordChangeTimeAnnotation] = time.Now().UTC().Format(time.RFC3339)
 		// ensure plain text password won't be kept anywhere
 		delete(user.Annotations, corev1.LastAppliedConfigAnnotation)
-		user.Annotations[iamv1alpha2.PasswordEncryptedAnnotation] = "true"
-		user.Status = iamv1alpha2.UserStatus{
-			State:              iamv1alpha2.UserActive,
-			LastTransitionTime: &metav1.Time{Time: time.Now()},
-		}
-		return c.ksClient.IamV1alpha2().Users().Update(user)
+		return c.ksClient.IamV1alpha2().Users().Update(context.Background(), user, metav1.UpdateOptions{})
 	}
-
 	return user, nil
 }
 
-func (c *Controller) ensureNotControlledByKubefed(user *iamv1alpha2.User) error {
+func (c *userController) ensureNotControlledByKubefed(user *iamv1alpha2.User) error {
 	if user.Labels[constants.KubefedManagedLabel] != "false" {
 		if user.Labels == nil {
 			user.Labels = make(map[string]string, 0)
 		}
 		user = user.DeepCopy()
 		user.Labels[constants.KubefedManagedLabel] = "false"
-		_, err := c.ksClient.IamV1alpha2().Users().Update(user)
+		_, err := c.ksClient.IamV1alpha2().Users().Update(context.Background(), user, metav1.UpdateOptions{})
 		if err != nil {
 			klog.Error(err)
 		}
@@ -419,8 +311,7 @@ func (c *Controller) ensureNotControlledByKubefed(user *iamv1alpha2.User) error 
 	return nil
 }
 
-func (c *Controller) multiClusterSync(user *iamv1alpha2.User) error {
-
+func (c *userController) multiClusterSync(user *iamv1alpha2.User) error {
 	if err := c.ensureNotControlledByKubefed(user); err != nil {
 		klog.Error(err)
 		return err
@@ -452,7 +343,7 @@ func (c *Controller) multiClusterSync(user *iamv1alpha2.User) error {
 	return nil
 }
 
-func (c *Controller) createFederatedUser(user *iamv1alpha2.User) error {
+func (c *userController) createFederatedUser(user *iamv1alpha2.User) error {
 	federatedUser := &iamv1alpha2.FederatedUser{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       iamv1alpha2.FedUserKind,
@@ -489,7 +380,7 @@ func (c *Controller) createFederatedUser(user *iamv1alpha2.User) error {
 		AbsPath(fmt.Sprintf("/apis/%s/%s/%s", iamv1alpha2.FedUserResource.Group,
 			iamv1alpha2.FedUserResource.Version, iamv1alpha2.FedUserResource.Name)).
 		Body(data).
-		Do().Error()
+		Do(context.Background()).Error()
 	if err != nil {
 		if errors.IsAlreadyExists(err) {
 			return nil
@@ -500,127 +391,149 @@ func (c *Controller) createFederatedUser(user *iamv1alpha2.User) error {
 	return nil
 }
 
-func (c *Controller) updateFederatedUser(fedUser *iamv1alpha2.FederatedUser) error {
+func (c *userController) updateFederatedUser(fedUser *iamv1alpha2.FederatedUser) error {
 	data, err := json.Marshal(fedUser)
 	if err != nil {
 		return err
 	}
 
 	cli := c.k8sClient.(*kubernetes.Clientset)
-
 	err = cli.RESTClient().Put().
 		AbsPath(fmt.Sprintf("/apis/%s/%s/%s/%s", iamv1alpha2.FedUserResource.Group,
 			iamv1alpha2.FedUserResource.Version, iamv1alpha2.FedUserResource.Name, fedUser.Name)).
 		Body(data).
-		Do().Error()
+		Do(context.Background()).Error()
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return nil
 		}
-		return err
-	}
-
-	return nil
-}
-
-func (c *Controller) assignDevOpsAdminRole(user *iamv1alpha2.User) error {
-	if err := c.devopsClient.AssignGlobalRole(modelsdevops.JenkinsAdminRoleName, user.Name); err != nil {
-		klog.Errorf("%+v", err)
-		return err
-	}
-	return nil
-}
-
-func (c *Controller) unassignDevOpsAdminRole(user *iamv1alpha2.User) error {
-	if err := c.devopsClient.UnAssignGlobalRole(modelsdevops.JenkinsAdminRoleName, user.Name); err != nil {
-		klog.Errorf("%+v", err)
-		return err
-	}
-	return nil
-}
-
-func (c *Controller) ldapSync(user *iamv1alpha2.User) error {
-	encrypted, _ := strconv.ParseBool(user.Annotations[iamv1alpha2.PasswordEncryptedAnnotation])
-	if encrypted {
-		return nil
-	}
-	_, err := c.ldapClient.Get(user.Name)
-	if err != nil {
-		if err == ldapclient.ErrUserNotExists {
-			klog.V(4).Infof("create user %s", user.Name)
-			return c.ldapClient.Create(user)
-		}
 		klog.Error(err)
 		return err
-	} else {
-		klog.V(4).Infof("update user %s", user.Name)
-		return c.ldapClient.Update(user)
 	}
+	return nil
 }
 
-func (c *Controller) deleteGroupBindings(user *iamv1alpha2.User) error {
+func (c *userController) waitForAssignDevOpsAdminRole(user *iamv1alpha2.User) error {
+	err := utilwait.PollImmediate(interval, timeout, func() (done bool, err error) {
+		if err := c.devopsClient.AssignGlobalRole(modelsdevops.JenkinsAdminRoleName, user.Name); err != nil {
+			klog.Error(err)
+			return false, err
+		}
+		return true, nil
+	})
+	return err
+}
 
+func (c *userController) waitForUnassignDevOpsAdminRole(user *iamv1alpha2.User) error {
+	err := utilwait.PollImmediate(interval, timeout, func() (done bool, err error) {
+		if err := c.devopsClient.UnAssignGlobalRole(modelsdevops.JenkinsAdminRoleName, user.Name); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	return err
+}
+
+func (c *userController) waitForSyncToLDAP(user *iamv1alpha2.User) error {
+	if isEncrypted(user.Spec.EncryptedPassword) {
+		return nil
+	}
+	err := utilwait.PollImmediate(interval, timeout, func() (done bool, err error) {
+		_, err = c.ldapClient.Get(user.Name)
+		if err != nil {
+			if err == ldapclient.ErrUserNotExists {
+				err = c.ldapClient.Create(user)
+				if err != nil {
+					klog.Error(err)
+					return false, err
+				}
+				return true, nil
+			}
+			klog.Error(err)
+			return false, err
+		}
+		err = c.ldapClient.Update(user)
+		if err != nil {
+			klog.Error(err)
+			return false, err
+		}
+		return true, nil
+	})
+	return err
+}
+
+func (c *userController) waitForDeleteFromLDAP(username string) error {
+	err := utilwait.PollImmediate(interval, timeout, func() (done bool, err error) {
+		err = c.ldapClient.Delete(username)
+		if err != nil && err != ldapclient.ErrUserNotExists {
+			klog.Error(err)
+			return false, err
+		}
+		return true, nil
+	})
+	return err
+}
+
+func (c *userController) deleteGroupBindings(user *iamv1alpha2.User) error {
 	// Groupbindings that created by kubeshpere will be deleted directly.
 	listOptions := metav1.ListOptions{
 		LabelSelector: labels.SelectorFromSet(labels.Set{iamv1alpha2.UserReferenceLabel: user.Name}).String(),
 	}
-	deleteOptions := metav1.NewDeleteOptions(0)
-
 	if err := c.ksClient.IamV1alpha2().GroupBindings().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), *metav1.NewDeleteOptions(0), listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
 	return nil
 }
 
-func (c *Controller) deleteRoleBindings(user *iamv1alpha2.User) error {
-	listOptions := metav1.ListOptions{
-		LabelSelector: labels.SelectorFromSet(labels.Set{iamv1alpha2.UserReferenceLabel: user.Name}).String(),
+func (c *userController) deleteRoleBindings(user *iamv1alpha2.User) error {
+	if len(user.Name) > validation.LabelValueMaxLength {
+		// ignore invalid label value error
+		return nil
 	}
-	deleteOptions := metav1.NewDeleteOptions(0)
-
+	listOptions := metav1.ListOptions{
+		LabelSelector: labels.SelectorFromValidatedSet(labels.Set{iamv1alpha2.UserReferenceLabel: user.Name}).String(),
+	}
+	deleteOptions := *metav1.NewDeleteOptions(0)
 	if err := c.ksClient.IamV1alpha2().GlobalRoleBindings().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), deleteOptions, listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
 
 	if err := c.ksClient.IamV1alpha2().WorkspaceRoleBindings().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), deleteOptions, listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
 
 	if err := c.k8sClient.RbacV1().ClusterRoleBindings().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), deleteOptions, listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
 
-	if result, err := c.k8sClient.CoreV1().Namespaces().List(metav1.ListOptions{}); err != nil {
+	if result, err := c.k8sClient.CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{}); err != nil {
 		klog.Error(err)
 		return err
 	} else {
 		for _, namespace := range result.Items {
-			if err = c.k8sClient.RbacV1().RoleBindings(namespace.Name).DeleteCollection(deleteOptions, listOptions); err != nil {
+			if err = c.k8sClient.RbacV1().RoleBindings(namespace.Name).DeleteCollection(context.Background(), deleteOptions, listOptions); err != nil {
 				klog.Error(err)
 				return err
 			}
 		}
 	}
-
 	return nil
 }
 
-func (c *Controller) deleteLoginRecords(user *iamv1alpha2.User) error {
+func (c *userController) deleteLoginRecords(user *iamv1alpha2.User) error {
 	listOptions := metav1.ListOptions{
 		LabelSelector: labels.SelectorFromSet(labels.Set{iamv1alpha2.UserReferenceLabel: user.Name}).String(),
 	}
-	deleteOptions := metav1.NewDeleteOptions(0)
-
 	if err := c.ksClient.IamV1alpha2().LoginRecords().
-		DeleteCollection(deleteOptions, listOptions); err != nil {
+		DeleteCollection(context.Background(), *metav1.NewDeleteOptions(0), listOptions); err != nil {
 		klog.Error(err)
 		return err
 	}
@@ -628,28 +541,60 @@ func (c *Controller) deleteLoginRecords(user *iamv1alpha2.User) error {
 }
 
 // syncUserStatus will reconcile user state based on user login records
-func (c *Controller) syncUserStatus(user *iamv1alpha2.User) (*iamv1alpha2.User, error) {
-	// disabled user, nothing to do
-	if user == nil || (user.Status.State == iamv1alpha2.UserDisabled) {
+func (c *userController) syncUserStatus(user *iamv1alpha2.User) (*iamv1alpha2.User, error) {
+
+	if user.Spec.EncryptedPassword == "" {
+		if user.Labels[iamv1alpha2.IdentifyProviderLabel] != "" {
+			// mapped user from other identity provider always active until disabled
+			if user.Status.State == nil || *user.Status.State != iamv1alpha2.UserActive {
+				expected := user.DeepCopy()
+				active := iamv1alpha2.UserActive
+				expected.Status = iamv1alpha2.UserStatus{
+					State:              &active,
+					LastTransitionTime: &metav1.Time{Time: time.Now()},
+				}
+				return c.ksClient.IamV1alpha2().Users().Update(context.Background(), expected, metav1.UpdateOptions{})
+			}
+		} else {
+			// becomes disabled after setting a blank password
+			if user.Status.State == nil || *user.Status.State != iamv1alpha2.UserDisabled {
+				expected := user.DeepCopy()
+				disabled := iamv1alpha2.UserDisabled
+				expected.Status = iamv1alpha2.UserStatus{
+					State:              &disabled,
+					LastTransitionTime: &metav1.Time{Time: time.Now()},
+				}
+				return c.ksClient.IamV1alpha2().Users().Update(context.Background(), expected, metav1.UpdateOptions{})
+			}
+		}
 		return user, nil
 	}
 
+	// becomes active after password encrypted
+	if isEncrypted(user.Spec.EncryptedPassword) {
+		if user.Status.State == nil || *user.Status.State == iamv1alpha2.UserDisabled {
+			expected := user.DeepCopy()
+			active := iamv1alpha2.UserActive
+			expected.Status = iamv1alpha2.UserStatus{
+				State:              &active,
+				LastTransitionTime: &metav1.Time{Time: time.Now()},
+			}
+			return c.ksClient.IamV1alpha2().Users().Update(context.Background(), expected, metav1.UpdateOptions{})
+		}
+	}
+
 	// blocked user, check if need to unblock user
-	if user.Status.State == iamv1alpha2.UserAuthLimitExceeded {
+	if user.Status.State != nil && *user.Status.State == iamv1alpha2.UserAuthLimitExceeded {
 		if user.Status.LastTransitionTime != nil &&
 			user.Status.LastTransitionTime.Add(c.authenticationOptions.AuthenticateRateLimiterDuration).Before(time.Now()) {
 			expected := user.DeepCopy()
 			// unblock user
-			if user.Annotations[iamv1alpha2.PasswordEncryptedAnnotation] == "true" {
-				expected.Status = iamv1alpha2.UserStatus{
-					State:              iamv1alpha2.UserActive,
-					LastTransitionTime: &metav1.Time{Time: time.Now()},
-				}
+			active := iamv1alpha2.UserActive
+			expected.Status = iamv1alpha2.UserStatus{
+				State:              &active,
+				LastTransitionTime: &metav1.Time{Time: time.Now()},
 			}
-
-			if !reflect.DeepEqual(expected.Status, user.Status) {
-				return c.ksClient.IamV1alpha2().Users().Update(expected)
-			}
+			return c.ksClient.IamV1alpha2().Users().Update(context.Background(), expected, metav1.UpdateOptions{})
 		}
 	}
 
@@ -664,7 +609,8 @@ func (c *Controller) syncUserStatus(user *iamv1alpha2.User) (*iamv1alpha2.User, 
 	now := time.Now()
 	failedLoginAttempts := 0
 	for _, loginRecord := range records {
-		if !loginRecord.Spec.Success && loginRecord.CreationTimestamp.Add(c.authenticationOptions.AuthenticateRateLimiterDuration).After(now) {
+		if !loginRecord.Spec.Success &&
+			loginRecord.CreationTimestamp.Add(c.authenticationOptions.AuthenticateRateLimiterDuration).After(now) {
 			failedLoginAttempts++
 		}
 	}
@@ -672,26 +618,29 @@ func (c *Controller) syncUserStatus(user *iamv1alpha2.User) (*iamv1alpha2.User, 
 	// block user if failed login attempts exceeds maximum tries setting
 	if failedLoginAttempts >= c.authenticationOptions.AuthenticateRateLimiterMaxTries {
 		expect := user.DeepCopy()
+		limitExceed := iamv1alpha2.UserAuthLimitExceeded
 		expect.Status = iamv1alpha2.UserStatus{
-			State:              iamv1alpha2.UserAuthLimitExceeded,
+			State:              &limitExceed,
 			Reason:             fmt.Sprintf("Failed login attempts exceed %d in last %s", failedLoginAttempts, c.authenticationOptions.AuthenticateRateLimiterDuration),
 			LastTransitionTime: &metav1.Time{Time: time.Now()},
 		}
-
 		// block user for AuthenticateRateLimiterDuration duration, after that put it back to the queue to unblock
-		c.workqueue.AddAfter(user.Name, c.authenticationOptions.AuthenticateRateLimiterDuration)
-
-		return c.ksClient.IamV1alpha2().Users().Update(expect)
+		c.Workqueue.AddAfter(user.Name, c.authenticationOptions.AuthenticateRateLimiterDuration)
+		return c.ksClient.IamV1alpha2().Users().Update(context.Background(), expect, metav1.UpdateOptions{})
 	}
+
 	return user, nil
 }
 
 func encrypt(password string) (string, error) {
-	// when user is already mapped to another identity, password is empty by default
-	// unable to log in directly until password reset
-	if password == "" {
-		return "", nil
-	}
 	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	return string(bytes), err
+}
+
+// isEncrypted returns whether the given password is encrypted
+func isEncrypted(password string) bool {
+	// bcrypt.Cost returns the hashing cost used to create the given hashed
+	cost, _ := bcrypt.Cost([]byte(password))
+	// cost > 0 means the password has been encrypted
+	return cost > 0
 }

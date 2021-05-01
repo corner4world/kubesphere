@@ -17,8 +17,8 @@ limitations under the License.
 package nsnetworkpolicy
 
 import (
+	"context"
 	"fmt"
-	"kubesphere.io/kubesphere/pkg/controller/network/types"
 	"net"
 	"sort"
 	"strings"
@@ -28,7 +28,6 @@ import (
 	netv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	typev1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	uruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -38,6 +37,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog"
+
 	"kubesphere.io/kubesphere/pkg/apis/network/v1alpha1"
 	workspacev1alpha1 "kubesphere.io/kubesphere/pkg/apis/tenant/v1alpha1"
 	ksnetclient "kubesphere.io/kubesphere/pkg/client/clientset/versioned/typed/network/v1alpha1"
@@ -62,7 +62,7 @@ const (
 
 	NodeNSNPAnnotationKey = "kubesphere.io/snat-node-ips"
 
-	AnnotationNPNAME = types.NSNPPrefix + "network-isolate"
+	AnnotationNPNAME = v1alpha1.NSNPPrefix + "network-isolate"
 
 	//TODO: configure it
 	DNSLocalIP        = "169.254.25.10"
@@ -222,7 +222,7 @@ func (c *NSNetworkPolicyController) convertPeer(peer v1alpha1.NetworkPolicyPeer,
 func (c *NSNetworkPolicyController) convertToK8sNP(n *v1alpha1.NamespaceNetworkPolicy) (*netv1.NetworkPolicy, error) {
 	np := &netv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      types.NSNPPrefix + n.Name,
+			Name:      v1alpha1.NSNPPrefix + n.Name,
 			Namespace: n.Namespace,
 		},
 		Spec: netv1.NetworkPolicySpec{
@@ -468,7 +468,7 @@ func (c *NSNetworkPolicyController) syncNs(key string) error {
 	if delete || matchWorkspace {
 		//delete all namespace np when networkisolate not active
 		if err == nil && len(nsnpList) > 0 {
-			if c.ksclient.NamespaceNetworkPolicies(ns.Name).DeleteCollection(nil, typev1.ListOptions{}) != nil {
+			if c.ksclient.NamespaceNetworkPolicies(ns.Name).DeleteCollection(context.Background(), metav1.DeleteOptions{}, metav1.ListOptions{}) != nil {
 				klog.Errorf("Error when delete all nsnps in namespace %s", ns.Name)
 			}
 		}
@@ -564,7 +564,7 @@ func (c *NSNetworkPolicyController) syncNSNP(key string) error {
 	if err != nil {
 		if errors.IsNotFound(err) {
 			klog.V(4).Infof("NSNP %v has been deleted", key)
-			c.provider.Delete(c.provider.GetKey(types.NSNPPrefix+name, namespace))
+			c.provider.Delete(c.provider.GetKey(v1alpha1.NSNPPrefix+name, namespace))
 			return nil
 		}
 

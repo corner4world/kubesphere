@@ -17,15 +17,18 @@ limitations under the License.
 package ipam
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"testing"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog"
+
 	"kubesphere.io/kubesphere/pkg/apis/network/v1alpha1"
 	ksfake "kubesphere.io/kubesphere/pkg/client/clientset/versioned/fake"
-	"testing"
 )
 
 func TestIPAM_blockGenerator(t *testing.T) {
@@ -121,19 +124,19 @@ var _ = Describe("test vlan ippool", func() {
 		stats, _ := c.GetUtilization(GetUtilizationArgs{Pools: []string{vlanIPPoolName}})
 		Expect(stats[0].Unallocated).To(Equal(255))
 
-		blocks, _ := c.client.NetworkV1alpha1().IPAMBlocks().List(v1.ListOptions{})
+		blocks, _ := c.client.NetworkV1alpha1().IPAMBlocks().List(context.Background(), v1.ListOptions{})
 		Expect(len(blocks.Items)).To(Equal(1))
 		Expect(blocks.Items[0].BlockName()).To(Equal(fmt.Sprintf("%d-%s", vlanIPPool.ID(), "192-168-0-0-24")))
 
-		handles, _ := c.client.NetworkV1alpha1().IPAMHandles().List(v1.ListOptions{})
+		handles, _ := c.client.NetworkV1alpha1().IPAMHandles().List(context.Background(), v1.ListOptions{})
 		Expect(len(handles.Items)).To(Equal(1))
 		Expect(handles.Items[0].Name).To(Equal("testhandle"))
 
 		Expect(c.ReleaseByHandle("testhandle")).ShouldNot(HaveOccurred())
-		blocks, _ = c.client.NetworkV1alpha1().IPAMBlocks().List(v1.ListOptions{})
+		blocks, _ = c.client.NetworkV1alpha1().IPAMBlocks().List(context.Background(), v1.ListOptions{})
 		Expect(len(blocks.Items)).To(Equal(0))
 
-		handles, _ = c.client.NetworkV1alpha1().IPAMHandles().List(v1.ListOptions{})
+		handles, _ = c.client.NetworkV1alpha1().IPAMHandles().List(context.Background(), v1.ListOptions{})
 		Expect(len(handles.Items)).To(Equal(0))
 	})
 })

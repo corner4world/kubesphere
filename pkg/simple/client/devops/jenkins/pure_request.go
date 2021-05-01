@@ -17,11 +17,13 @@ limitations under the License.
 package jenkins
 
 import (
-	"k8s.io/klog"
-	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 	"net/http"
 	"net/url"
 	"time"
+
+	"k8s.io/klog"
+
+	"kubesphere.io/kubesphere/pkg/simple/client/devops"
 )
 
 // TODO: deprecated, use SendJenkinsRequestWithHeaderResp() instead
@@ -34,12 +36,13 @@ func (j *Jenkins) SendPureRequest(path string, httpParameters *devops.HttpParame
 // provider request header to call jenkins api.
 // transfer bearer token to basic token for inner Oauth and Jeknins
 func (j *Jenkins) SendPureRequestWithHeaderResp(path string, httpParameters *devops.HttpParameters) ([]byte, http.Header, error) {
-	Url, err := url.Parse(j.Server + path)
+	apiURL, err := url.Parse(j.Server + path)
 	if err != nil {
-		klog.Error(err)
+		klog.V(8).Info(err)
 		return nil, nil, err
 	}
 
+	apiURL.RawQuery = httpParameters.Url.RawQuery
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	header := httpParameters.Header
@@ -47,7 +50,7 @@ func (j *Jenkins) SendPureRequestWithHeaderResp(path string, httpParameters *dev
 
 	newRequest := &http.Request{
 		Method:   httpParameters.Method,
-		URL:      Url,
+		URL:      apiURL,
 		Header:   header,
 		Body:     httpParameters.Body,
 		Form:     httpParameters.Form,

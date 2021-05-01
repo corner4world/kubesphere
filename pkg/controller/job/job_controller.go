@@ -17,9 +17,14 @@ limitations under the License.
 package job
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
@@ -29,7 +34,6 @@ import (
 	batchv1informers "k8s.io/client-go/informers/batch/v1"
 	batchv1listers "k8s.io/client-go/listers/batch/v1"
 	log "k8s.io/klog"
-	"time"
 
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -234,7 +238,7 @@ func (v *JobController) makeRevision(job *batchv1.Job) error {
 	}
 
 	job.Annotations[revisionsAnnotationKey] = string(revisionsByte)
-	_, err = v.client.BatchV1().Jobs(job.Namespace).Update(job)
+	_, err = v.client.BatchV1().Jobs(job.Namespace).Update(context.Background(), job, metav1.UpdateOptions{})
 
 	if err != nil {
 		return err

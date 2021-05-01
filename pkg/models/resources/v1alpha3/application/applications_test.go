@@ -17,104 +17,128 @@ limitations under the License.
 package application
 
 import (
-	"github.com/google/go-cmp/cmp"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"kubesphere.io/kubesphere/pkg/api"
-	"kubesphere.io/kubesphere/pkg/apiserver/query"
-	appv1beta1 "sigs.k8s.io/application/pkg/apis/app/v1beta1"
-	"sigs.k8s.io/application/pkg/client/clientset/versioned/fake"
-	"sigs.k8s.io/application/pkg/client/informers/externalversions"
+	"context"
+	"path/filepath"
+	"reflect"
 	"testing"
+
+	core "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/klog/v2"
+	appv1beta1 "sigs.k8s.io/application/api/v1beta1"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"kubesphere.io/kubesphere/pkg/apiserver/query"
 )
 
-func applicationsToRuntimeObjects(applications ...*appv1beta1.Application) []runtime.Object {
-	var objs []runtime.Object
-	for _, app := range applications {
-		objs = append(objs, app)
+var c client.Client
+
+func createNamespace(name string, ctx context.Context) {
+	namespace := &core.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
 	}
-	return objs
+	err := c.Create(ctx, namespace)
+	if err != nil {
+		klog.Error(err)
+	}
 }
 
-func TestListApplications(t *testing.T) {
-	tests := []struct {
-		description string
-		namespace   string
-		deployments []*appv1beta1.Application
-		query       *query.Query
-		expected    api.ListResult
-		expectedErr error
-	}{
+func compare(actual *appv1beta1.Application, expects ...*appv1beta1.Application) bool {
+	for _, app := range expects {
+		if actual.Name == app.Name && actual.Namespace == app.Namespace && reflect.DeepEqual(actual.Labels, app.Labels) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGetListApplications(t *testing.T) {
+	e := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "..", "..", "config", "crds")}}
+	cfg, err := e.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sch := scheme.Scheme
+	if err := appv1beta1.AddToScheme(sch); err != nil {
+		t.Fatalf("unable add APIs to scheme: %v", err)
+	}
+
+	stopCh := make(chan struct{})
+
+	ce, _ := cache.New(cfg, cache.Options{Scheme: sch})
+	go ce.Start(stopCh)
+	ce.WaitForCacheSync(stopCh)
+
+	c, _ = client.New(cfg, client.Options{Scheme: sch})
+
+	var labelSet1 = map[string]string{"foo-1": "bar-1"}
+	var labelSet2 = map[string]string{"foo-2": "bar-2"}
+
+	var ns = "ns-1"
+	testCases := []*appv1beta1.Application{
 		{
-			"test name filter",
-			"bar2",
-			[]*appv1beta1.Application{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "foo-1",
-						Namespace: "bar",
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "foo-2",
-						Namespace: "bar",
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "bar-2",
-						Namespace: "bar2",
-					},
-				},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "app-1",
+				Namespace: ns,
+				Labels:    labelSet1,
 			},
-			&query.Query{
-				Pagination: &query.Pagination{
-					Limit:  10,
-					Offset: 0,
-				},
-				SortBy:    query.FieldName,
-				Ascending: false,
-				Filters:   map[query.Field]query.Value{query.FieldNamespace: query.Value("bar2")},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "app-2",
+				Namespace: ns,
+				Labels:    labelSet2,
 			},
-			api.ListResult{
-				Items: []interface{}{
-					&appv1beta1.Application{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "bar-2",
-							Namespace: "bar2",
-						},
-					},
-				},
-				TotalItems: 2,
-			},
-			nil,
 		},
 	}
 
-	for _, test := range tests {
-		t.Run(test.description, func(t *testing.T) {
-			objs := applicationsToRuntimeObjects(test.deployments...)
-			client := fake.NewSimpleClientset(objs...)
+	ctx := context.TODO()
+	createNamespace(ns, ctx)
 
-			informer := externalversions.NewSharedInformerFactory(client, 0)
+	for _, app := range testCases {
+		if err = c.Create(ctx, app); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-			for _, deployment := range test.deployments {
-				informer.App().V1beta1().Applications().Informer().GetIndexer().Add(deployment)
-			}
+	getter := New(ce)
 
-			getter := New(informer)
+	results, err := getter.List(ns, &query.Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			got, err := getter.List(test.namespace, test.query)
-			if test.expectedErr != nil && err != test.expectedErr {
-				t.Errorf("expected error, got nothing")
-			} else if err != nil {
-				t.Fatal(err)
-			}
+	if results.TotalItems != len(testCases) {
+		t.Fatal("TotalItems is not match")
+	}
 
-			if diff := cmp.Diff(got.Items, test.expected.Items); diff != "" {
-				t.Errorf("%T differ (-got, +want): %s", test.expected, diff)
-			}
-		})
+	if len(results.Items) != len(testCases) {
+		t.Fatal("Items numbers is not match mock data")
+	}
+
+	for _, app := range results.Items {
+		app, err := app.(*appv1beta1.Application)
+		if !err {
+			t.Fatal(err)
+		}
+		if !compare(app, testCases...) {
+			t.Errorf("The results %v not match testcases %v", results.Items, testCases)
+		}
+	}
+
+	result, err := getter.Get(ns, "app-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app := result.(*appv1beta1.Application)
+	if !compare(app, testCases...) {
+		t.Errorf("The results %v not match testcases %v", result, testCases)
 	}
 }

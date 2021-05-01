@@ -19,12 +19,14 @@ limitations under the License.
 package calicov3
 
 import (
+	"context"
 	time "time"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
+
 	networkcalicov3 "kubesphere.io/kubesphere/pkg/apis/network/calicov3"
 	versioned "kubesphere.io/kubesphere/pkg/simple/client/network/ippool/calico/client/clientset/versioned"
 	internalinterfaces "kubesphere.io/kubesphere/pkg/simple/client/network/ippool/calico/client/informers/externalversions/internalinterfaces"
@@ -60,13 +62,13 @@ func NewFilteredIPAMBlockInformer(client versioned.Interface, resyncPeriod time.
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CrdCalicov3().IPAMBlocks().List(options)
+				return client.CrdCalicov3().IPAMBlocks().List(context.TODO(), options)
 			},
 			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
-				return client.CrdCalicov3().IPAMBlocks().Watch(options)
+				return client.CrdCalicov3().IPAMBlocks().Watch(context.TODO(), options)
 			},
 		},
 		&networkcalicov3.IPAMBlock{},

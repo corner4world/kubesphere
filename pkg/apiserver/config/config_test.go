@@ -18,20 +18,28 @@ package config
 
 import (
 	"fmt"
+	"io/ioutil"
+	"os"
+	"testing"
+	"time"
+
 	"github.com/google/go-cmp/cmp"
 	"gopkg.in/yaml.v2"
-	"io/ioutil"
+
+	networkv1alpha1 "kubesphere.io/kubesphere/pkg/apis/network/v1alpha1"
 	"kubesphere.io/kubesphere/pkg/apiserver/authentication/oauth"
 	authoptions "kubesphere.io/kubesphere/pkg/apiserver/authentication/options"
 	authorizationoptions "kubesphere.io/kubesphere/pkg/apiserver/authorization/options"
 	"kubesphere.io/kubesphere/pkg/simple/client/alerting"
-	auditingclient "kubesphere.io/kubesphere/pkg/simple/client/auditing/elasticsearch"
+	"kubesphere.io/kubesphere/pkg/simple/client/auditing"
 	"kubesphere.io/kubesphere/pkg/simple/client/cache"
 	"kubesphere.io/kubesphere/pkg/simple/client/devops/jenkins"
-	eventsclient "kubesphere.io/kubesphere/pkg/simple/client/events/elasticsearch"
+	"kubesphere.io/kubesphere/pkg/simple/client/events"
 	"kubesphere.io/kubesphere/pkg/simple/client/k8s"
+	"kubesphere.io/kubesphere/pkg/simple/client/kubeedge"
 	"kubesphere.io/kubesphere/pkg/simple/client/ldap"
-	"kubesphere.io/kubesphere/pkg/simple/client/logging/elasticsearch"
+	"kubesphere.io/kubesphere/pkg/simple/client/logging"
+	"kubesphere.io/kubesphere/pkg/simple/client/metering"
 	"kubesphere.io/kubesphere/pkg/simple/client/monitoring/prometheus"
 	"kubesphere.io/kubesphere/pkg/simple/client/multicluster"
 	"kubesphere.io/kubesphere/pkg/simple/client/network"
@@ -40,9 +48,6 @@ import (
 	"kubesphere.io/kubesphere/pkg/simple/client/s3"
 	"kubesphere.io/kubesphere/pkg/simple/client/servicemesh"
 	"kubesphere.io/kubesphere/pkg/simple/client/sonarqube"
-	"os"
-	"testing"
-	"time"
 )
 
 func newTestConfig() (*Config, error) {
@@ -93,29 +98,43 @@ func newTestConfig() (*Config, error) {
 			Bucket:          "ssss",
 		},
 		OpenPitrixOptions: &openpitrix.Options{
-			RuntimeManagerEndpoint:    "openpitrix-hyperpitrix.openpitrix-system.svc:9103",
-			ClusterManagerEndpoint:    "openpitrix-hyperpitrix.openpitrix-system.svc:9104",
-			RepoManagerEndpoint:       "openpitrix-hyperpitrix.openpitrix-system.svc:9101",
-			AppManagerEndpoint:        "openpitrix-hyperpitrix.openpitrix-system.svc:9102",
-			CategoryManagerEndpoint:   "openpitrix-hyperpitrix.openpitrix-system.svc:9113",
-			AttachmentManagerEndpoint: "openpitrix-hyperpitrix.openpitrix-system.svc:9122",
+			S3Options: &s3.Options{
+				Endpoint:        "http://minio.openpitrix-system.svc",
+				Region:          "",
+				DisableSSL:      false,
+				ForcePathStyle:  false,
+				AccessKeyID:     "ABCDEFGHIJKLMN",
+				SecretAccessKey: "OPQRSTUVWXYZ",
+				SessionToken:    "abcdefghijklmn",
+				Bucket:          "app",
+			},
+			ReleaseControllerOptions: &openpitrix.ReleaseControllerOptions{
+				MaxConcurrent: 10,
+				WaitTime:      30 * time.Second,
+			},
 		},
 		NetworkOptions: &network.Options{
 			EnableNetworkPolicy: true,
 			NSNPOptions: network.NSNPOptions{
 				AllowedIngressNamespaces: []string{},
 			},
+			WeaveScopeHost: "weave-scope-app.weave",
+			IPPoolType:     networkv1alpha1.IPPoolTypeNone,
 		},
 		MonitoringOptions: &prometheus.Options{
 			Endpoint: "http://prometheus.kubesphere-monitoring-system.svc",
 		},
-		LoggingOptions: &elasticsearch.Options{
+		LoggingOptions: &logging.Options{
 			Host:        "http://elasticsearch-logging.kubesphere-logging-system.svc:9200",
 			IndexPrefix: "elk",
 			Version:     "6",
 		},
 		AlertingOptions: &alerting.Options{
 			Endpoint: "http://alerting-client-server.kubesphere-alerting-system.svc:9200/api",
+
+			PrometheusEndpoint:       "http://prometheus-operated.kubesphere-monitoring-system.svc",
+			ThanosRulerEndpoint:      "http://thanos-ruler-operated.kubesphere-monitoring-system.svc",
+			ThanosRuleResourceLabels: "thanosruler=thanos-ruler,role=thanos-alerting-rules",
 		},
 		NotificationOptions: &notification.Options{
 			Endpoint: "http://notification.kubesphere-alerting-system.svc:9200",
@@ -143,15 +162,21 @@ func newTestConfig() (*Config, error) {
 		MultiClusterOptions: &multicluster.Options{
 			Enable: false,
 		},
-		EventsOptions: &eventsclient.Options{
+		EventsOptions: &events.Options{
 			Host:        "http://elasticsearch-logging-data.kubesphere-logging-system.svc:9200",
 			IndexPrefix: "ks-logstash-events",
 			Version:     "6",
 		},
-		AuditingOptions: &auditingclient.Options{
+		AuditingOptions: &auditing.Options{
 			Host:        "http://elasticsearch-logging-data.kubesphere-logging-system.svc:9200",
 			IndexPrefix: "ks-logstash-auditing",
 			Version:     "6",
+		},
+		KubeEdgeOptions: &kubeedge.Options{
+			Endpoint: "http://edge-watcher.kubeedge.svc/api/",
+		},
+		MeteringOptions: &metering.Options{
+			RetentionDay: "7d",
 		},
 	}
 	return conf, nil
@@ -196,5 +221,59 @@ func TestGet(t *testing.T) {
 	}
 	if diff := cmp.Diff(conf, conf2); diff != "" {
 		t.Fatal(diff)
+	}
+}
+
+func TestStripEmptyOptions(t *testing.T) {
+	var config Config
+
+	config.RedisOptions = &cache.Options{Host: ""}
+	config.DevopsOptions = &jenkins.Options{Host: ""}
+	config.MonitoringOptions = &prometheus.Options{Endpoint: ""}
+	config.SonarQubeOptions = &sonarqube.Options{Host: ""}
+	config.LdapOptions = &ldap.Options{Host: ""}
+	config.NetworkOptions = &network.Options{
+		EnableNetworkPolicy: false,
+		WeaveScopeHost:      "",
+		IPPoolType:          networkv1alpha1.IPPoolTypeNone,
+	}
+	config.ServiceMeshOptions = &servicemesh.Options{
+		IstioPilotHost:            "",
+		ServicemeshPrometheusHost: "",
+		JaegerQueryHost:           "",
+	}
+	config.S3Options = &s3.Options{
+		Endpoint: "",
+	}
+	config.AlertingOptions = &alerting.Options{
+		Endpoint:            "",
+		PrometheusEndpoint:  "",
+		ThanosRulerEndpoint: "",
+	}
+	config.LoggingOptions = &logging.Options{Host: ""}
+	config.NotificationOptions = &notification.Options{Endpoint: ""}
+	config.MultiClusterOptions = &multicluster.Options{Enable: false}
+	config.EventsOptions = &events.Options{Host: ""}
+	config.AuditingOptions = &auditing.Options{Host: ""}
+	config.KubeEdgeOptions = &kubeedge.Options{Endpoint: ""}
+
+	config.stripEmptyOptions()
+
+	if config.RedisOptions != nil ||
+		config.DevopsOptions != nil ||
+		config.MonitoringOptions != nil ||
+		config.SonarQubeOptions != nil ||
+		config.LdapOptions != nil ||
+		config.NetworkOptions != nil ||
+		config.ServiceMeshOptions != nil ||
+		config.S3Options != nil ||
+		config.AlertingOptions != nil ||
+		config.LoggingOptions != nil ||
+		config.NotificationOptions != nil ||
+		config.MultiClusterOptions != nil ||
+		config.EventsOptions != nil ||
+		config.AuditingOptions != nil ||
+		config.KubeEdgeOptions != nil {
+		t.Fatal("config stripEmptyOptions failed")
 	}
 }

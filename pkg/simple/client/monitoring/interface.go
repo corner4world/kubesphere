@@ -16,7 +16,9 @@ limitations under the License.
 
 package monitoring
 
-import "time"
+import (
+	"time"
+)
 
 type Interface interface {
 	GetMetric(expr string, time time.Time) Metric
@@ -25,4 +27,8 @@ type Interface interface {
 	GetNamedMetricsOverTime(metrics []string, start, end time.Time, step time.Duration, opt QueryOption) []Metric
 	GetMetadata(namespace string) []Metadata
 	GetMetricLabelSet(expr string, start, end time.Time) []map[string]string
+
+	// meter
+	GetNamedMeters(meters []string, time time.Time, opts []QueryOption) []Metric
+	GetNamedMetersOverTime(metrics []string, start, end time.Time, step time.Duration, opts []QueryOption) []Metric
 }

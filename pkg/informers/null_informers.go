@@ -17,20 +17,24 @@ limitations under the License.
 package informers
 
 import (
-	snapshotinformer "github.com/kubernetes-csi/external-snapshotter/v2/pkg/client/informers/externalversions"
+	"time"
+
+	snapshotinformer "github.com/kubernetes-csi/external-snapshotter/client/v3/informers/externalversions"
+	prominformers "github.com/prometheus-operator/prometheus-operator/pkg/client/informers/externalversions"
+	promfake "github.com/prometheus-operator/prometheus-operator/pkg/client/versioned/fake"
 	istioinformers "istio.io/client-go/pkg/informers/externalversions"
 	apiextensionsinformers "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+
 	ksfake "kubesphere.io/kubesphere/pkg/client/clientset/versioned/fake"
 	ksinformers "kubesphere.io/kubesphere/pkg/client/informers/externalversions"
-	appinformers "sigs.k8s.io/application/pkg/client/informers/externalversions"
-	"time"
 )
 
 type nullInformerFactory struct {
 	fakeK8sInformerFactory informers.SharedInformerFactory
 	fakeKsInformerFactory  ksinformers.SharedInformerFactory
+	fakePrometheusFactory  prominformers.SharedInformerFactory
 }
 
 func NewNullInformerFactory() InformerFactory {
@@ -40,9 +44,13 @@ func NewNullInformerFactory() InformerFactory {
 	fakeKsClient := ksfake.NewSimpleClientset()
 	fakeKsInformerFactory := ksinformers.NewSharedInformerFactory(fakeKsClient, time.Minute*10)
 
+	fakePrometheusClient := promfake.NewSimpleClientset()
+	fakePrometheusFactory := prominformers.NewSharedInformerFactory(fakePrometheusClient, time.Minute*10)
+
 	return &nullInformerFactory{
 		fakeK8sInformerFactory: fakeInformerFactory,
 		fakeKsInformerFactory:  fakeKsInformerFactory,
+		fakePrometheusFactory:  fakePrometheusFactory,
 	}
 }
 
@@ -58,16 +66,16 @@ func (n nullInformerFactory) IstioSharedInformerFactory() istioinformers.SharedI
 	return nil
 }
 
-func (n nullInformerFactory) ApplicationSharedInformerFactory() appinformers.SharedInformerFactory {
-	return nil
-}
-
 func (n nullInformerFactory) SnapshotSharedInformerFactory() snapshotinformer.SharedInformerFactory {
 	return nil
 }
 
 func (n nullInformerFactory) ApiExtensionSharedInformerFactory() apiextensionsinformers.SharedInformerFactory {
 	return nil
+}
+
+func (n *nullInformerFactory) PrometheusSharedInformerFactory() prominformers.SharedInformerFactory {
+	return n.fakePrometheusFactory
 }
 
 func (n nullInformerFactory) Start(stopCh <-chan struct{}) {

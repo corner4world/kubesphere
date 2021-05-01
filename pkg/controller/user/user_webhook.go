@@ -19,11 +19,13 @@ package user
 import (
 	"context"
 	"fmt"
-	"kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 	"net/http"
 	"net/mail"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
 )
 
 type EmailValidator struct {
@@ -39,10 +41,7 @@ func (a *EmailValidator) Handle(ctx context.Context, req admission.Request) admi
 	}
 
 	allUsers := v1alpha2.UserList{}
-
-	err = a.Client.List(ctx, &allUsers, &client.ListOptions{})
-
-	if err != nil {
+	if err = a.Client.List(ctx, &allUsers, &client.ListOptions{}); err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
@@ -51,7 +50,6 @@ func (a *EmailValidator) Handle(ctx context.Context, req admission.Request) admi
 	}
 
 	alreadyExist := emailAlreadyExist(allUsers, user)
-
 	if alreadyExist {
 		return admission.Errored(http.StatusConflict, fmt.Errorf("user email: %s already exists", user.Spec.Email))
 	}

@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"kubesphere.io/kubesphere/pkg/apiserver/authorization/authorizer"
 	"kubesphere.io/kubesphere/pkg/client/clientset/versioned"
 	"kubesphere.io/kubesphere/pkg/client/informers/externalversions"
 	"kubesphere.io/kubesphere/pkg/models/devops"
@@ -28,16 +29,19 @@ import (
 type ProjectPipelineHandler struct {
 	devopsOperator          devops.DevopsOperator
 	projectCredentialGetter devops.ProjectCredentialGetter
+	authorizer              authorizer.Authorizer
 }
 
 type PipelineSonarHandler struct {
 	pipelineSonarGetter devops.PipelineSonarGetter
 }
 
-func NewProjectPipelineHandler(devopsClient devopsClient.Interface) ProjectPipelineHandler {
+func NewProjectPipelineHandler(devopsClient devopsClient.Interface, ksInformers externalversions.SharedInformerFactory,
+	authorizer authorizer.Authorizer) ProjectPipelineHandler {
 	return ProjectPipelineHandler{
-		devopsOperator:          devops.NewDevopsOperator(devopsClient, nil, nil, nil, nil),
+		devopsOperator:          devops.NewDevopsOperator(devopsClient, nil, nil, ksInformers, nil),
 		projectCredentialGetter: devops.NewProjectCredentialOperator(devopsClient),
+		authorizer:              authorizer,
 	}
 }
 
