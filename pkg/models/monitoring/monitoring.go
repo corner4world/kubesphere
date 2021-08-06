@@ -31,7 +31,8 @@ import (
 	"sigs.k8s.io/application/api/v1beta1"
 	appv1beta1 "sigs.k8s.io/application/api/v1beta1"
 
-	"kubesphere.io/kubesphere/pkg/apis/iam/v1alpha2"
+	"kubesphere.io/api/iam/v1alpha2"
+
 	"kubesphere.io/kubesphere/pkg/apiserver/query"
 	ksinformers "kubesphere.io/kubesphere/pkg/client/informers/externalversions"
 	"kubesphere.io/kubesphere/pkg/constants"
@@ -458,7 +459,7 @@ func (mo monitoringOperator) GetNamedMetersOverTime(meters []string, start, end 
 	ress := mo.prometheus.GetNamedMetersOverTime(meters, start, end, time.Hour, opts)
 	sMap := generateScalingFactorMap(step)
 
-	for i, _ := range ress {
+	for i := range ress {
 		ress[i].MetricData = updateMetricStatData(ress[i], sMap, priceInfo)
 	}
 
@@ -469,7 +470,7 @@ func (mo monitoringOperator) GetNamedMeters(meters []string, time time.Time, opt
 
 	metersPerHour := mo.getNamedMetersWithHourInterval(meters, time, opt)
 
-	for metricIndex, _ := range metersPerHour.Results {
+	for metricIndex := range metersPerHour.Results {
 
 		res := metersPerHour.Results[metricIndex]
 

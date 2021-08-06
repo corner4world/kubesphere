@@ -26,7 +26,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"gopkg.in/yaml.v2"
 
-	networkv1alpha1 "kubesphere.io/kubesphere/pkg/apis/network/v1alpha1"
+	networkv1alpha1 "kubesphere.io/api/network/v1alpha1"
+
 	"kubesphere.io/kubesphere/pkg/apiserver/authentication/oauth"
 	authoptions "kubesphere.io/kubesphere/pkg/apiserver/authentication/options"
 	authorizationoptions "kubesphere.io/kubesphere/pkg/apiserver/authorization/options"
@@ -84,7 +85,7 @@ func newTestConfig() (*Config, error) {
 		RedisOptions: &cache.Options{
 			Host:     "localhost",
 			Port:     6379,
-			Password: "P@88w0rd",
+			Password: "KUBESPHERE_REDIS_PASSWORD",
 			DB:       0,
 		},
 		S3Options: &s3.Options{
@@ -214,6 +215,9 @@ func TestGet(t *testing.T) {
 	}
 	saveTestConfig(t, conf)
 	defer cleanTestConfig(t)
+
+	conf.RedisOptions.Password = "P@88w0rd"
+	os.Setenv("KUBESPHERE_REDIS_PASSWORD", "P@88w0rd")
 
 	conf2, err := TryLoadFromDisk()
 	if err != nil {

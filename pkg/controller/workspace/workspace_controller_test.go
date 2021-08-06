@@ -25,7 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	tenantv1alpha1 "kubesphere.io/kubesphere/pkg/apis/tenant/v1alpha1"
+	tenantv1alpha1 "kubesphere.io/api/tenant/v1alpha1"
 )
 
 var _ = Describe("Workspace", func() {
@@ -33,7 +33,7 @@ var _ = Describe("Workspace", func() {
 	const timeout = time.Second * 30
 	const interval = time.Second * 1
 
-	// Add Tests for OpenAPI validation (or additonal CRD features) specified in
+	// Add Tests for OpenAPI validation (or additional CRD features) specified in
 	// your API definition.
 	// Avoid adding tests for vanilla CRUD operations because they would
 	// test Kubernetes API server, which isn't the goal here.

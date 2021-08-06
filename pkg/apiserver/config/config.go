@@ -23,7 +23,8 @@ import (
 
 	"github.com/spf13/viper"
 
-	networkv1alpha1 "kubesphere.io/kubesphere/pkg/apis/network/v1alpha1"
+	networkv1alpha1 "kubesphere.io/api/network/v1alpha1"
+
 	authoptions "kubesphere.io/kubesphere/pkg/apiserver/authentication/options"
 	authorizationoptions "kubesphere.io/kubesphere/pkg/apiserver/authorization/options"
 	"kubesphere.io/kubesphere/pkg/simple/client/alerting"
@@ -139,6 +140,11 @@ func TryLoadFromDisk() (*Config, error) {
 
 	// Load from current working directory, only used for debugging
 	viper.AddConfigPath(".")
+
+	// Load from Environment variables
+	viper.SetEnvPrefix("kubesphere")
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
